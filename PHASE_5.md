@@ -70,216 +70,221 @@ distinguishing "did not run" from "ran and failed" with no line to read.
 
 ## The code
 
+Every block below is a diff against the commit the document was first generated from
+(`6d30032`), except where git says there is nothing to diff.
+
+### `src/server/Bootstrap.server.luau`
+
+*The composition root. Read the header for what it refuses to do, the intent handler for the order, and `buildSession` for the respawn wiring.*
+
+`git hash-object src/server/Bootstrap.server.luau` -> `a690d65c5621`
+
+**Changed since this document was written.** The diff is `git diff 6d30032..HEAD -- src/server/Bootstrap.server.luau` —
+apply it to the file as it stood and you get the file described here.
+
+```diff
+diff --git a/src/server/Bootstrap.server.luau b/src/server/Bootstrap.server.luau
+index 8595b00..a690d65 100644
+--- a/src/server/Bootstrap.server.luau
++++ b/src/server/Bootstrap.server.luau
+@@ -61,10 +61,17 @@ local STATE_INTERVAL = 1 / 10
+ 
+ local sessions = {} -- [player] = session
+ 
++-- Counted by pairs, not with #: the catalog is keyed by id, and `#` on a dictionary returns 0 no
++-- matter how full it is. This line reported "0 abilities" on a healthy boot, which cost more time
++-- than printing nothing would have.
++local catalogSize = 0
++for _ in pairs(Catalog) do
++	catalogSize += 1
++end
+ print(
+ 	string.format(
+ 		"[ability-kit] bootstrap up: %d abilities in the catalog, %d equipped by default",
+-		#Catalog,
++		catalogSize,
+ 		Config.MAX_EQUIPPED
+ 	)
+ )
+@@ -80,6 +87,10 @@ local function ownerProxy(session, player)
+ 	local character = player.Character
+ 	local unit = nil
+ 	if character ~= nil then
++		-- Described fresh on every use, which today means once per player per frame. It is six table
++		-- reads. If this ever shows up in a profile, the fix is to describe once per character and
++		-- invalidate on CharacterAdded — not to cache blindly, because `alive` and `health.current`
++		-- are exactly the two fields a stale copy would get wrong.
+ 		unit = session.adapter:describe(character)
+ 	end
+ 	return {
+@@ -100,6 +111,42 @@ local function buildSession(player)
+ 		stateClock = 0,
+ 	}
+ 	sessions[player] = session
++
++	--[[
++		Death and respawn, wired HERE and not in the PlayerAdded callback.
++
++		Three functions were written and tested for this and none of them was ever called: reset() clears
++		cooldowns and casts, refill() takes the pools back to full, clear() drops the effects. Without
++		this wiring a player who dies mid-cast keeps the cooldown, the spent mana and the poison on their
++		corpse, and comes back with all three.
++
++		It lives in buildSession because that is the one function BOTH paths go through — PlayerAdded for
++		whoever joins, and the seed loop for whoever is already here when the script runs. Kept in the
++		PlayerAdded callback it covered the first path and silently missed the second, which in Studio is
++		the only one that ever runs.
++
++		Two events rather than one, because they are two different moments with two different subjects:
++		`CharacterAdded` is about the player coming back, and `CharacterRemoving` is about the character
++		going away. `CharacterRemoving` also fires while the Instance is still valid, which is what makes
++		it the right place to drop the effects — the id they are keyed by is that Instance.
++	]]
++	player.CharacterAdded:Connect(function()
++		local current = sessions[player]
++		if current ~= nil then
++			current.manager:reset()
++			current.resources:refill()
++		end
++	end)
++
++	player.CharacterRemoving:Connect(function(character)
++		local current = sessions[player]
++		if current ~= nil then
++			-- The id a target is keyed by is the character Instance, not the Player. Clearing by
++			-- player would remove nothing and leave the effects running on a corpse.
++			current.effects:clear(character)
++		end
++	end)
++
+ 	return session
+ end
+ 
+@@ -122,20 +169,18 @@ Players.PlayerAdded:Connect(function(player)
+ 	buildSession(player)
+ end)
+ 
+--- And the players who are already here. A script connects PlayerAdded at the point it runs, and in
+--- Studio that point is reached AFTER the local player has joined — so the event never fires for them
+--- and they get no session: no state, no intents, nothing. This is not a Studio quirk to work around;
+--- the same thing happens to anyone already in a server when a script reloads.
+-for _, player in ipairs(Players:GetPlayers()) do
+-	buildSession(player)
+-end
+-
+ Players.PlayerRemoving:Connect(function(player)
+ 	local session = sessions[player]
+ 	if session ~= nil then
+ 		-- Nothing to save: this kit persists no state. What there is to do is let go of it, so a
+ 		-- session cannot outlive the player it belongs to.
+-		session.effects:clear(player)
++		--
++		-- The effects are keyed by the CHARACTER, which is the id describe() gives them, so
++		-- clear(player) removed nothing. This clears the one that exists.
++		local character = player.Character
++		if character ~= nil then
++			session.effects:clear(character)
++		end
+ 		sessions[player] = nil
+ 	end
+ end)
+@@ -174,6 +219,13 @@ intentRemote.OnServerEvent:Connect(function(player, payload)
+ 
+ 	-- Only now does anything move. The check above cannot have passed and this fail, because both
+ 	-- read the same table in the same frame.
++	--
++	-- The cost is paid at the COMMIT POINT, which is the activation and not the firing. That makes
++	-- an interrupted cast a paid-for cast: a Fireball interrupted at 0.3s of 0.4s has spent the
++	-- mana and produced nothing. This is deliberate — the alternative is a refund path, which means
++	-- the server tracks what each cast has paid and reconciles it on every interrupt, cancel and
++	-- disconnect. A game that wants the forgiving version calls `resources:restore` on the ability's
++	-- cost when it cancels, which is the reason that function exists.
+ 	session.resources:spend(ability:getCost())
+ end)
+ 
+@@ -193,6 +245,12 @@ RunService.Heartbeat:Connect(function(dt)
+ 
+ 		for _, firing in ipairs(session.manager:advance(dt)) do
+ 			if unit ~= nil then
++				-- KNOWN LIMITATION: target = source. Every ability is self-cast, because the intent
++				-- carries no target and nothing here resolves one. Fireball, whose definition says
++				-- "a single target" with range 60, therefore burns its caster. Target selection is
++				-- a later phase: a raycast from the caster's CFrame, or a client-supplied reference
++				-- the server validates. Giving the client the choice without validating it is the one
++				-- version of this that is not an option.
+ 				local events = session.effects:applyFiring(firing, {
+ 					source = unit,
+ 					target = unit,
+@@ -214,8 +272,15 @@ RunService.Heartbeat:Connect(function(dt)
+ 
+ 		session.stateClock = session.stateClock + dt
+ 		if session.stateClock >= STATE_INTERVAL then
+-			session.stateClock = 0
+-			stateRemote:FireClient(player, snapshot(session))
++			-- Subtract rather than zero: the overshoot belongs to the next interval. Zeroing it
++			-- loses time on every send, which is the same "time that goes missing" shape this kit
++			-- has already met twice — in the cooldown and in the DoT.
++			session.stateClock -= STATE_INTERVAL
++			if player.Parent ~= nil then
++				-- A player can leave between the heartbeat starting and this line. Firing at a
++				-- departed player is silent, but checking costs one comparison.
++				stateRemote:FireClient(player, snapshot(session))
++			end
+ 		end
+ 	end
+ end)
+```
 
 ### `src/shared/Net.luau`
 
 *The contract, and the client-facing trust boundary as a pure function — which is why it has a suite.*
 
-`git hash-object src/shared/Net.luau` -> `40c845fc0087`32acf422fcfc`
+`git hash-object src/shared/Net.luau` -> `40c845fc0087`
 
-```lua
---[[
-	Net.luau — the wire between the two sides, described once.
-
-	One remote up and one remote down. The up remote carries exactly one shape:
-
-	    { action = "activate", slot = 3 }
-
-	and nothing else. No cost, no target, no direction, no damage. Every one of those is decided on
-	the server from a definition the client cannot see. A client that sends a cost is not a client
-	this kit is written for, and the validator below is what says so rather than a comment hoping.
-
-	The names live here so the two sides cannot drift, and the shape check is a pure function so it
-	can be tested without an engine — which is the only reason a client's payload gets validated
-	before it reaches anything that matters.
-]]
-
-local Net = {}
-
-Net.FOLDER = "AbilityKitNet"
-Net.INTENT = "Intent" -- client -> server
-Net.STATE = "State" -- server -> client
-
--- The only action there is. An ability is activated; it is never "used with 40 damage".
-Net.ACTIONS = { "activate" }
-
-Net.MAX_SLOT = nil -- set from Config.MAX_EQUIPPED by Net.configure
-
-function Net.configure(config)
-	Net.MAX_SLOT = config.MAX_EQUIPPED
-end
-
---[[
-	Checks a client's payload and returns (ok, value): on success `value` is the normalised intent,
-	and on failure it is the reason string that goes to the log. Two different things in one slot,
-	which is a shape worth naming rather than leaving to be inferred.
-
-	This is the whole of the client-facing trust boundary, and it is deliberately dull: an action
-	from a known list, and a slot within range. Anything else is refused, including a payload that
-	carries an extra field — the only way to keep a future field from becoming a future exploit is
-	to reject what this version does not know.
-
-	The reason is for the log. It is never sent back: a client that can read why it was refused is a
-	client being taught how to ask.
-]]
-function Net.validateIntent(payload)
-	if type(payload) ~= "table" then
-		return false, "intent is not a table"
-	end
-
-	if type(payload.action) ~= "string" then
-		return false, "intent has no action"
-	end
-
-	local known = false
-	for _, action in ipairs(Net.ACTIONS) do
-		if payload.action == action then
-			known = true
-			break
-		end
-	end
-	if not known then
-		return false, string.format("unknown action '%s'", tostring(payload.action))
-	end
-
-	-- An integer, not merely a number. `1.5` would pass a range check and then find no ability, which
-	-- is a silent no-op where a refusal belongs: the boundary is cheaper to tighten than to explain.
-	if type(payload.slot) ~= "number" or payload.slot ~= payload.slot then
-		return false, "slot must be a number"
-	end
-	if payload.slot ~= math.floor(payload.slot) then
-		return false, string.format("slot %s is not a slot", tostring(payload.slot))
-	end
-	if payload.slot < 1 or (Net.MAX_SLOT ~= nil and payload.slot > Net.MAX_SLOT) then
-		return false, string.format("slot %s is out of range", tostring(payload.slot))
-	end
-
-	-- No extra fields. Stated as a rule rather than assumed, because "it only reads slot" stops
-	-- being true the moment somebody adds a convenient field to the client's payload.
-	for name in pairs(payload) do
-		if name ~= "action" and name ~= "slot" then
-			return false, string.format("intent carries unexpected field '%s'", tostring(name))
-		end
-	end
-
-	return true, { action = payload.action, slot = payload.slot }
-end
-
-return Net
-```
-
-### `src/server/Bootstrap.server.luau`
-
-*The composition root. Read the header for what it refuses to do, and the intent handler for the
-order.*
-
-`git hash-object src/server/Bootstrap.server.luau` -> `a690d65c5621`
-
-**The paste here is a diff, not the file.** A document that repeats a whole file is a document that
-will one day disagree with it — this one already did, for three rounds, describing respawn wiring
-that its own paste did not contain. A diff cannot disagree: it either applies or it does not.
+**Changed since this document was written.** The diff is `git diff 6d30032..HEAD -- src/shared/Net.luau` —
+apply it to the file as it stood and you get the file described here.
 
 ```diff
-diff --git a/src/server/Bootstrap.server.luau b/src/server/Bootstrap.server.luau
-index 4883a54..5e31a05 100644
---- a/src/server/Bootstrap.server.luau
-+++ b/src/server/Bootstrap.server.luau
-@@ -94,31 +94,6 @@ local function ownerProxy(session, player)
- 	}
+diff --git a/src/shared/Net.luau b/src/shared/Net.luau
+index 32acf42..40c845f 100644
+--- a/src/shared/Net.luau
++++ b/src/shared/Net.luau
+@@ -30,7 +30,9 @@ function Net.configure(config)
  end
  
----[[
--	Death and respawn.
--
--	Three functions were written and tested for this and none of them was ever called: reset() clears
--	cooldowns and casts, refill() takes the pools back to full, clear() drops the effects. Without
--	this connection a player who dies mid-cast keeps the cooldown, the spent mana and the poison on
--	their corpse, and comes back with all three.
--]]
--local function onCharacterAdded(player, character)
--	local session = sessions[player]
--	if session == nil then
--		return
--	end
--
--	local previous = session.lastCharacter
--	if previous ~= nil and previous ~= character then
--		session.effects:clear(previous)
--	end
--	session.lastCharacter = character
--
--	session.manager:reset()
--	session.resources:refill()
--	session.effects:clear(character)
--end
--
- local function buildSession(player)
- 	local adapter = EffectAdapter.new(Config)
- 	local session = {
-@@ -127,17 +102,8 @@ local function buildSession(player)
- 		effects = EffectSystem.new(Config),
- 		adapter = adapter,
- 		stateClock = 0,
--		lastCharacter = nil,
- 	}
- 	sessions[player] = session
--
--	player.CharacterAdded:Connect(function(character)
--		onCharacterAdded(player, character)
--	end)
--	if player.Character ~= nil then
--		onCharacterAdded(player, player.Character)
--	end
--
- 	return session
- end
+ --[[
+-	Checks a client's payload and returns (ok, intentOrReason).
++	Checks a client's payload and returns (ok, value): on success `value` is the normalised intent,
++	and on failure it is the reason string that goes to the log. Two different things in one slot,
++	which is a shape worth naming rather than leaving to be inferred.
  
-@@ -156,8 +122,38 @@ local function snapshot(session)
- 	return state
- end
+ 	This is the whole of the client-facing trust boundary, and it is deliberately dull: an action
+ 	from a known list, and a slot within range. Anything else is refused, including a payload that
+@@ -60,9 +62,14 @@ function Net.validateIntent(payload)
+ 		return false, string.format("unknown action '%s'", tostring(payload.action))
+ 	end
  
-+--[[
-+	Death and respawn.
-+
-+	Three functions were written and tested for this and none of them was ever called: reset() clears
-+	cooldowns and casts, refill() takes the pools back to full, clear() drops the effects. Without
-+	this wiring a player who dies mid-cast keeps the cooldown, the spent mana and the poison on their
-+	corpse, and comes back with all three.
-+
-+	Two events rather than one, because they are two different moments with two different subjects:
-+	`CharacterAdded` is about the player coming back, and `CharacterRemoving` is about the character
-+	going away. `CharacterRemoving` also fires while the Instance is still valid, which is what makes
-+	it the right place to drop the effects — the id they are keyed by is that Instance.
-+]]
- Players.PlayerAdded:Connect(function(player)
- 	buildSession(player)
-+
-+	player.CharacterAdded:Connect(function()
-+		local session = sessions[player]
-+		if session ~= nil then
-+			session.manager:reset()
-+			session.resources:refill()
-+		end
-+	end)
-+
-+	player.CharacterRemoving:Connect(function(character)
-+		local session = sessions[player]
-+		if session ~= nil then
-+			-- The id a target is keyed by is the character Instance, not the Player. Clearing by
-+			-- player would remove nothing and leave the effects running on a corpse.
-+			session.effects:clear(character)
-+		end
-+	end)
- end)
- 
- -- And the players who are already here. A script connects PlayerAdded at the point it runs, and in
++	-- An integer, not merely a number. `1.5` would pass a range check and then find no ability, which
++	-- is a silent no-op where a refusal belongs: the boundary is cheaper to tighten than to explain.
+ 	if type(payload.slot) ~= "number" or payload.slot ~= payload.slot then
+ 		return false, "slot must be a number"
+ 	end
++	if payload.slot ~= math.floor(payload.slot) then
++		return false, string.format("slot %s is not a slot", tostring(payload.slot))
++	end
+ 	if payload.slot < 1 or (Net.MAX_SLOT ~= nil and payload.slot > Net.MAX_SLOT) then
+ 		return false, string.format("slot %s is out of range", tostring(payload.slot))
+ 	end
 ```
 
 ### `src/client/AbilityClient.client.luau`
 
 *The client's whole job: a keypress becomes an intent. No local cooldown check, no cost, no target.*
 
-`git hash-object src/client/AbilityClient.client.luau` -> `8802ae2e4d45` -> `8802ae2e4d45`
+`git hash-object src/client/AbilityClient.client.luau` -> `8802ae2e4d45`
+
+**Unchanged since this document was written**, so the whole file is below rather than a
+diff — a diff of nothing is a line that invites someone to look for what is missing.
 
 ```lua
 --[[
@@ -341,39 +346,48 @@ end)
 
 *The seam phase 7 will read from.*
 
-`git hash-object src/client/ClientState.luau` -> `b08e5ee52aa6` -> `7236a8d567af`
+`git hash-object src/client/ClientState.luau` -> `b08e5ee52aa6`
 
-```lua
---[[
-	ClientState.luau — the last snapshot the server sent, and nothing else.
+**Changed since this document was written.** The diff is `git diff 6d30032..HEAD -- src/client/ClientState.luau` —
+apply it to the file as it stood and you get the file described here.
 
-	It exists as a module rather than a variable inside the client script so that the UI of phase 7
-	can read it without being wired into the input handling. The client has no other state, and
-	deliberately no logic: it does not check a cooldown locally, does not know a cost, and cannot
-	decide that an ability is ready. It asks, and it waits.
-]]
-
-local ClientState = {}
-
-ClientState.latest = nil
-ClientState.changed = nil -- a BindableEvent, created by the client, for whatever draws this
-
-function ClientState.set(state)
-	ClientState.latest = state
-	if ClientState.changed ~= nil then
-		ClientState.changed:Fire(state)
-	end
-end
-
-return ClientState
+```diff
+diff --git a/src/client/ClientState.luau b/src/client/ClientState.luau
+index 7236a8d..b08e5ee 100644
+--- a/src/client/ClientState.luau
++++ b/src/client/ClientState.luau
+@@ -9,8 +9,20 @@
+ 
+ local ClientState = {}
+ 
++--[[
++	Initialisation order, for whoever reads this in phase 6/7.
++
++	This module is required and its fields assigned in two different places: `latest` is written by
++	`set`, and `changed` is created by the client script — which requires this module and sets it on
++	the next line. So a consumer that requires this module BEFORE the client script runs sees
++	`changed == nil`. Guard on it (`if ClientState.changed ~= nil`), or require this from the client
++	script and nowhere earlier.
++
++	Both fields being nil until something writes them is deliberate: a module that invents a default
++	state is a module that reports a state the server never sent.
++]]
+ ClientState.latest = nil
+-ClientState.changed = nil -- a BindableEvent, created by the client, for whatever draws this
++ClientState.changed = nil -- a BindableEvent, created by the client script, for whatever draws this
+ 
+ function ClientState.set(state)
+ 	ClientState.latest = state
 ```
 
 ### `src/shared/Config.luau`
 
-*The single source of truth for the replicated state, and where the `MANAGER_FIELDS` split is
-explained. Read the two field lists and the comment above them.*
+*The single source of truth for the replicated state, and where the `MANAGER_FIELDS` split is explained.*
 
-`git hash-object src/shared/Config.luau` -> `d21115a9ce04`d21115a9ce04`
+`git hash-object src/shared/Config.luau` -> `d21115a9ce04`
+
+**Unchanged since this document was written**, so the whole file is below rather than a
+diff — a diff of nothing is a line that invites someone to look for what is missing.
 
 ```lua
 --[[
@@ -480,7 +494,6 @@ Config.MESSAGES = {
 
 return Config
 ```
-
 ## How to test it
 
 ```
@@ -492,6 +505,44 @@ stylua --check src/ tests/   # prints nothing
 `NetSpec` covers the client-facing boundary — every case is a payload this version refuses.
 The Bootstrap has no suite and cannot have one: it is the file that needs a server. What it
 has is a playtest, and the check that matters is that a snapshot reaches the client.
+
+## The wire finding, and why nothing else is observable
+
+Found in the playtest, and it is the most important line in this document.
+
+**The repro.** In a live server, with the session built and the character alive, the client sends
+`{ action = "activate", slot = 1 }`. Nothing happens — and nothing says so:
+
+```
+antes de activar:      mana=100/100 | cooldowns {1=0, 2=0, 3=0, 4=0} | cast=false
+a 0.15s tras activar:  mana=100/100 | cooldowns {1=0, 2=0, 3=0, 4=0} | cast=false
+a 0.75s tras activar:  mana=100/100 | cooldowns {1=0, 2=0, 3=0, 4=0} | cast=false
+```
+
+No cooldown, no spend, no cast, and **no refusal in the log**.
+
+**The pure layer is not the problem.** A probe that skips the wire entirely, in the same live server:
+
+```
+catalog: 4 claves [DASH, FIREBALL, HEAL, POISON]
+getAbility(1) = FIREBALL
+activate(1) = true, nil
+cooldowns {1=0, 2=0, 3=0, 4=0} | cast=true | gc=0.35
+```
+
+So the manager activates correctly, and the intent dies between the remote and the handler — the
+`sessions[player]` lookup or the `if ability == nil then return end`. **That silent `return` is the
+reason this took a probe to find**: an early return with no log is indistinguishable from nothing
+having happened, which is the same gap this phase already declared for refusals.
+
+**The probe that isolates it, for the next run:** a second `OnServerEvent` connected to the `Intent`
+remote from the server, plus a client `FireServer`. If the probe fires, the wire is fine and the
+Bootstrap's handler is dying silently; if it does not, the `FireServer` is not arriving.
+
+**This is why the rest of the list is blocked rather than pending.** With the intent not producing an
+activation, there is no mana spent and no cooldown set, so a death proves nothing about the respawn
+wiring and a refused intent proves nothing about the boundary. The order is: fix the wire, then watch
+boot, respawn and activation in one playtest.
 
 ## The regression this round introduced and removed
 
