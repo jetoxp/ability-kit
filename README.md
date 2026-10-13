@@ -198,6 +198,16 @@ clock — so the per-session body is wrapped and the error is logged loudly rath
 callers call.** Respawn wiring was added to the `PlayerAdded` callback, which covered everyone who
 joined and silently missed everyone already in the game — which, in Studio, is everyone.
 
+**A test can agree with the bug it was written to catch, and then confirm it instead of finding it.**
+The definition validator was supposed to refuse two abilities sharing an id. It walked the catalog with
+the table key as the identity, and a table key is unique by construction, so the collision check was
+dead code that could never fire. Its test built the input the same way — indexing by the same key — so
+it passed for exactly the same wrong reason, and stayed green. This is the most uncomfortable of the
+five, because it is the one that answers the question a reviewer is actually asking: *why did the tests
+not catch it?* **Because the test and the code shared one reading of the problem.** Writing the test
+from the same head that wrote the function does not verify the function; it verifies the
+misunderstanding, and files it as evidence.
+
 ## Files
 
 ```
@@ -207,11 +217,21 @@ src/shared/     pure modules, testable in a terminal: Config, AbilityDefinition,
 src/server/     the only files that touch the engine: Bootstrap (composition root),
                 EffectAdapter, TargetAdapter
 src/client/     a keypress becomes an intent, and ClientState holds the last snapshot
-tests/          eight Luau suites plus the runner; no Studio needed
+tests/          seven Luau suites plus the runner (the runner is not a suite); no Studio needed
 PHASE_*.md      the working notes of each phase, in order, including the bugs and the
-                corrections they forced
+                corrections they forced. The two most recent are the ones worth reading
+                for how the seam behaves: PHASE_5.md (the wire and the boot) and
+                PHASE_6.md (targeting, and four bugs the engine found that the suite
+                could not)
 ```
 
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
+
+One closing note, because leaving it out would be the same failure in a smaller size. For several
+rounds the quality gate below reported `0 errors, 1 warning`, and the warning was reported without its
+name — a number with no noun. It was `unused_variable: hit`, a leftover capture in the heartbeat from
+the edit that split the aim direction into two shapes: the edit's reason no longer applied and the
+variable stayed. Named, and gone. A gate that reports `1` and stops there is a promise closed without
+saying what it promised.
