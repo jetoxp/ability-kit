@@ -54,8 +54,16 @@ end
 	Always a list: empty for a miss, one for a single-target shot, N for an area. `impactPoint` is
 	required and never nil - the adapter passes where the ray landed, or `origin + direction * range`
 	when it landed nowhere, so a miss centres the blast at the end of the shot rather than in the air.
+
+	THE CASTER IS TOLD, and excluded from the direct target. This was not always so: an earlier version
+	took the position that excluding the caster was the adapter's job alone, through the raycast
+	filter, and that this module should not know who the caster was. The engine refuted it. A shot that
+	hits nothing falls back to the end of its range, and with no other candidate in front THE CASTER
+	BECOMES THE ONLY ELIGIBLE ONE and takes its own damage - the phase 5 bug, through a different door.
+	The adapter's filter is the first defence now, not the only one, and the rule that matters lives
+	here where it has a suite.
 ]]
-function TargetResolver.resolve(candidates, origin, direction, range, radius, impactPoint)
+function TargetResolver.resolve(candidates, origin, direction, range, radius, impactPoint, caster)
 	local chosen = {}
 	if
 		type(candidates) ~= "table"
@@ -83,7 +91,10 @@ function TargetResolver.resolve(candidates, origin, direction, range, radius, im
 	-- candidate on the ray's own origin.
 	local best, bestDistance = nil, math.huge
 	for _, unit in ipairs(candidates) do
-		if isUnit(unit) then
+		-- The caster is never a direct target. Compared by id rather than by table identity, because
+		-- every describe() builds a fresh unit and the same character is never the same table twice.
+		local isCaster = caster ~= nil and unit.id ~= nil and unit.id == caster.id
+		if isUnit(unit) and not isCaster then
 			local from = {
 				x = unit.position.x - origin.x,
 				y = unit.position.y - origin.y,

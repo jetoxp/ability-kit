@@ -62,21 +62,44 @@ T("with several in line, the one nearest the impact point wins", function()
 	)
 end)
 
-T("the resolver makes no exception for any candidate, including the caster", function()
-	-- Pinned deliberately, in the direction that looks wrong: a lone candidate sitting exactly on the
-	-- origin IS selected, because this module has no idea the origin is somebody's root.
+T("the caster is never a direct target, and can be caught by the splash", function()
+	-- Four behaviours, one rule. The caster is passed in and excluded from the DIRECT target; with a
+	-- radius it is judged by the same geometry as anybody else.
 	--
-	-- Excluding the caster is the ADAPTER's job, through the raycast filter — the ray starts at the
-	-- caster's root and without `FilterDescendantsInstances = { casterCharacter }` the first thing a
-	-- Fireball hits is the arm firing it. This case exists so that nobody "fixes" the resolver by
-	-- teaching it about casters, and so that the division of labour is a test rather than a comment.
-	local onOrigin = unit(0)
-	local chosen = TargetResolver.resolve({ onOrigin, unit(25) }, ORIGIN, FORWARD, 60, 0, at(25))
-	assert(#chosen == 1, "one hit")
-	assert(chosen[1].position.x == 25, "and it is the one nearest the impact")
+	-- This replaces a case that asserted the opposite ("no hidden filter lives here") and was correct
+	-- at the time: the filter was not hidden, it did not exist. The engine found the hole - a shot
+	-- that missed everything selected its own caster and dealt it the damage - so the rule moved here,
+	-- where it has a suite, and the adapter's raycast filter became the first defence rather than the
+	-- only one.
+	local caster = unit(0)
+	local otro = unit(25)
+
+	-- radius == 0, only the caster: nothing to hit. This is the case that was impossible under the
+	-- old contract and is the whole point of the change.
 	assert(
-		#TargetResolver.resolve({ onOrigin }, ORIGIN, FORWARD, 60, 0, at(0)) == 1,
-		"and alone it IS selected: no exception lives here"
+		#TargetResolver.resolve({ caster }, ORIGIN, FORWARD, 60, 0, at(60), caster) == 0,
+		"alone, the caster is a miss"
+	)
+
+	-- radius == 0, caster and another in line: only the other, even though the caster is nearer.
+	local directo = TargetResolver.resolve({ caster, otro }, ORIGIN, FORWARD, 60, 0, at(25), caster)
+	assert(#directo == 1, "one target, got " .. #directo)
+	assert(directo[1].position.x == 25, "and it is not the caster")
+
+	-- radius > 0, caster inside the sphere: it appears, because a blast at your feet reaching you is
+	-- geometry rather than a targeting decision.
+	local cerca = unit(2)
+	local dentro = TargetResolver.resolve({ caster, cerca }, ORIGIN, FORWARD, 60, 5, at(1), caster)
+	assert(#dentro == 2, "both are inside a sphere around the impact, got " .. #dentro)
+
+	-- radius > 0, caster outside the sphere: it does not.
+	local fuera = TargetResolver.resolve({ caster, otro }, ORIGIN, FORWARD, 60, 3, at(25), caster)
+	assert(#fuera == 1, "only the one at the impact, got " .. #fuera)
+
+	-- And without a caster passed, nothing is excluded: the rule needs the caster to apply.
+	assert(
+		#TargetResolver.resolve({ caster }, ORIGIN, FORWARD, 60, 0, at(60), nil) == 1,
+		"no caster given, no exclusion"
 	)
 end)
 

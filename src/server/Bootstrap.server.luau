@@ -274,74 +274,93 @@ end)
 ]]
 RunService.Heartbeat:Connect(function(dt)
 	for player, session in pairs(sessions) do
-		local owner = ownerProxy(session, player)
-		local unit = owner.unit
+		local ok, err = pcall(function()
+			local owner = ownerProxy(session, player)
+			local unit = owner.unit
 
-		session.resources:advance(dt)
+			session.resources:advance(dt)
 
-		for _, firing in ipairs(session.manager:advance(dt)) do
-			if unit ~= nil then
-				-- TWO SHAPES OF THE SAME DIRECTION, and they are not interchangeable:
-				--   * the Vector3 goes to the engine -- castRay multiplies it by the range and the
-				--     adapter turns it into a CFrame;
-				--   * the plain table goes to the resolver, which speaks { x, y, z }.
-				-- Passing the table to castRay threw inside the Heartbeat, and a Heartbeat handler
-				-- that throws is DISCONNECTED: the intent handler kept spending mana while nothing
-				-- ever fired again. Found by the engine, after a whole round of the suite being green.
-				local aim = session.adapter.directionOf(owner.character)
-				local direction = aim ~= nil and { x = aim.X, y = aim.Y, z = aim.Z }
-					or { x = 0, y = 0, z = 0 }
-				local definition = AbilityDefinition.get(firing.id)
-				local targeting = definition and definition.targeting or "self"
-				-- The effects come from the DEFINITION, not from the firing: a firing carries what
-				-- happened (id, slot), and it was applyFiring that used to look them up. Reading
-				-- firing.effects here produced empty loops and a shot that spent mana and did
-				-- nothing -- found by the engine run, not by the suite.
-				local effects = definition and definition.effects or {}
+			for _, firing in ipairs(session.manager:advance(dt)) do
+				if unit ~= nil then
+					-- TWO SHAPES OF THE SAME DIRECTION, and they are not interchangeable:
+					--   * the Vector3 goes to the engine -- castRay multiplies it by the range and the
+					--     adapter turns it into a CFrame;
+					--   * the plain table goes to the resolver, which speaks { x, y, z }.
+					-- Passing the table to castRay threw inside the Heartbeat, and a Heartbeat handler
+					-- that throws is DISCONNECTED: the intent handler kept spending mana while nothing
+					-- ever fired again. Found by the engine, after a whole round of the suite being green.
+					local aim = session.adapter.directionOf(owner.character)
+					local direction = aim ~= nil and { x = aim.X, y = aim.Y, z = aim.Z }
+						or { x = 0, y = 0, z = 0 }
+					local definition = AbilityDefinition.get(firing.id)
+					local targeting = definition and definition.targeting or "self"
+					-- The effects come from the DEFINITION, not from the firing: a firing carries what
+					-- happened (id, slot), and it was applyFiring that used to look them up. Reading
+					-- firing.effects here produced empty loops and a shot that spent mana and did
+					-- nothing -- found by the engine run, not by the suite.
+					local effects = definition and definition.effects or {}
 
-				-- THE ONE BRANCH. It lives here, in the resolution step, and the loops below never
-				-- see it: they receive a list and do not know where it came from. For "self" the
-				-- resolver is not called, because there is nothing to resolve.
-				local resolved
-				if targeting == "raycast" then
-					local range = definition.range or 0
-					local radius = definition.radius or 0
-					local impactPoint, hit = session.targets:castRay(owner.character, range, aim)
-					if impactPoint == nil then
-						-- A targeting refusal, not a miss: there is no character to shoot from, so
-						-- nothing was attempted. This is the only targeting line that logs.
-						print(
-							string.format(
-								"[ability-kit] %s fired '%s' with no character to aim from",
-								player.Name,
-								firing.id
+					-- THE ONE BRANCH. It lives here, in the resolution step, and the loops below never
+					-- see it: they receive a list and do not know where it came from. For "self" the
+					-- resolver is not called, because there is nothing to resolve.
+					local resolved
+					if targeting == "raycast" then
+						local range = definition.range or 0
+						local radius = definition.radius or 0
+						local impactPoint, hit =
+							session.targets:castRay(owner.character, range, aim)
+						if impactPoint == nil then
+							-- A targeting refusal, not a miss: there is no character to shoot from, so
+							-- nothing was attempted. This is the only targeting line that logs.
+							print(
+								string.format(
+									"[ability-kit] %s fired '%s' with no character to aim from",
+									player.Name,
+									firing.id
+								)
 							)
-						)
-						resolved = nil
+							resolved = nil
+						else
+							resolved = TargetResolver.resolve(
+								session.targets:gather(),
+								unit.position,
+								direction,
+								range,
+								radius,
+								impactPoint,
+								unit
+							)
+							-- An empty list here is a MISS and logs nothing: a shot that hits nothing is
+							-- a shot, and a line per shot would make the log useless. See D6.
+						end
 					else
-						resolved = TargetResolver.resolve(
-							session.targets:gather(),
-							unit.position,
-							direction,
-							range,
-							radius,
-							impactPoint
-						)
-						-- An empty list here is a MISS and logs nothing: a shot that hits nothing is
-						-- a shot, and a line per shot would make the log useless. See D6.
+						resolved = { unit }
 					end
-				else
-					resolved = { unit }
-				end
 
-				if resolved ~= nil then
-					-- Offensive effects, once per resolved target.
-					for _, target in ipairs(resolved) do
+					if resolved ~= nil then
+						-- Offensive effects, once per resolved target.
+						for _, target in ipairs(resolved) do
+							for _, effect in ipairs(effects) do
+								if TargetResolver.isOffensive(effect.kind) then
+									local events = session.effects:applyEffect(effect, firing.id, {
+										source = unit,
+										target = target,
+										direction = aim,
+									})
+									for _, event in ipairs(events or {}) do
+										session.adapter:apply(event)
+									end
+								end
+							end
+						end
+
+						-- Everything else, to the caster, ONCE -- outside the target loop, or a buff
+						-- would stack by the number of people standing in front of you.
 						for _, effect in ipairs(effects) do
-							if TargetResolver.isOffensive(effect.kind) then
+							if not TargetResolver.isOffensive(effect.kind) then
 								local events = session.effects:applyEffect(effect, firing.id, {
 									source = unit,
-									target = target,
+									target = unit,
 									direction = aim,
 								})
 								for _, event in ipairs(events or {}) do
@@ -350,46 +369,44 @@ RunService.Heartbeat:Connect(function(dt)
 							end
 						end
 					end
-
-					-- Everything else, to the caster, ONCE -- outside the target loop, or a buff
-					-- would stack by the number of people standing in front of you.
-					for _, effect in ipairs(effects) do
-						if not TargetResolver.isOffensive(effect.kind) then
-							local events = session.effects:applyEffect(effect, firing.id, {
-								source = unit,
-								target = unit,
-								direction = aim,
-							})
-							for _, event in ipairs(events or {}) do
-								session.adapter:apply(event)
-							end
-						end
-					end
 				end
 			end
-		end
 
-		-- The timed effects tick whether or not anything fired, and a DoT that cannot reach its
-		-- target still expires rather than living forever.
-		if unit ~= nil then
-			for _, event in ipairs(session.effects:advance(dt)) do
-				session.adapter:apply(event)
+			-- The timed effects tick whether or not anything fired, and a DoT that cannot reach its
+			-- target still expires rather than living forever.
+			if unit ~= nil then
+				for _, event in ipairs(session.effects:advance(dt)) do
+					session.adapter:apply(event)
+				end
 			end
-		end
 
-		session.stateClock = session.stateClock + dt
-		if session.stateClock >= STATE_INTERVAL then
-			-- The overshoot belongs to the next interval, but only whole intervals of it: a stale
-			-- snapshot is not worth catching up on. `-= STATE_INTERVAL` alone would fire once per
-			-- frame until the backlog drained — a burst nobody asked for after a long frame — so the
-			-- backlog is dropped and exactly one snapshot goes out.
-			local intervals = math.floor(session.stateClock / STATE_INTERVAL)
-			session.stateClock -= intervals * STATE_INTERVAL
-			if player.Parent ~= nil then
-				-- A player can leave between the heartbeat starting and this line. Firing at a
-				-- departed player is silent, but checking costs one comparison.
-				stateRemote:FireClient(player, snapshot(session))
+			session.stateClock = session.stateClock + dt
+			if session.stateClock >= STATE_INTERVAL then
+				-- The overshoot belongs to the next interval, but only whole intervals of it: a stale
+				-- snapshot is not worth catching up on. `-= STATE_INTERVAL` alone would fire once per
+				-- frame until the backlog drained — a burst nobody asked for after a long frame — so the
+				-- backlog is dropped and exactly one snapshot goes out.
+				local intervals = math.floor(session.stateClock / STATE_INTERVAL)
+				session.stateClock -= intervals * STATE_INTERVAL
+				if player.Parent ~= nil then
+					-- A player can leave between the heartbeat starting and this line. Firing at a
+					-- departed player is silent, but checking costs one comparison.
+					stateRemote:FireClient(player, snapshot(session))
+				end
 			end
+		end)
+		if not ok then
+			-- A Heartbeat callback that throws is DISCONNECTED, and a disconnected Heartbeat is a game
+			-- that spends mana and never fires again. One bad session must not stop the clock for
+			-- everybody: swallowing an exception is usually wrong, and here letting one player stop
+			-- the server's tick is worse. The tick is shared infrastructure.
+			print(
+				string.format(
+					"[ability-kit] heartbeat error for %s: %s",
+					player.Name,
+					tostring(err)
+				)
+			)
 		end
 	end
 end)
