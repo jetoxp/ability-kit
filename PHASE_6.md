@@ -38,7 +38,7 @@ already covering the vertical case. The client never sends a vector.
 
 It enters when a definition needs it and brings its own specification with it.
 
-### D4. `radius` is the only genuinely new semantics, and it is two lines
+### D4. The target-selection rules
 
 - `radius == 0` → **single target**: the first hit of the raycast.
 - `radius > 0` → **every candidate inside the sphere centred on the impact point.**
@@ -83,11 +83,6 @@ something asks for it by name.**
 
 Both are stated here rather than left implicit because the first ability that needs an AoE would
 otherwise invent the rule on its own, and this project has seen how that ends.
-
-**Consequence worth stating:** under this division the resolver receives the caster as an ordinary
-candidate and selects it if it is the best one — which happens exactly when the adapter failed to
-filter. That is why the adapter's filter is not an optimisation: it is the rule's only enforcement
-point.
 
 **The spec case.** Five assertions on one rule, and no longer a test of an absence:
 
@@ -219,7 +214,7 @@ number, because a placeholder is a debt rather than a rule.
 ## The seam, made explicit
 
 ```
-TargetResolver (pure)     candidates + origin + direction + range + radius + impactPoint -> a list
+TargetResolver (pure)     candidates + origin + direction + range + radius + impactPoint + caster -> a list
 TargetAdapter (engine)    DETECTION: the real raycast, and Characters into units
 EffectSystem (unchanged)  receives a target that is already resolved and does not know who chose it
 ```
