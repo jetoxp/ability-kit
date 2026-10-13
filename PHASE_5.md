@@ -493,6 +493,119 @@ end
 return ClientState
 ```
 
+### `src/shared/Config.luau`
+
+*The single source of truth for the replicated state, and where the `MANAGER_FIELDS` split is
+explained. Read the two field lists and the comment above them.*
+
+`git hash-object src/shared/Config.luau` -> `d21115a9ce04`
+
+```lua
+--[[
+	Config.luau — every tunable of the framework, in one place, and nothing that reads from
+	Roblox. The point is that a consumer can change how this kit behaves without opening a
+	single module that has logic in it.
+
+	This file also pins the SHAPE of the replicated state before any module that uses it exists.
+	That is deliberate. The remote that carries the snapshot arrives in a later phase, but the
+	shape decides what every module has to expose, so discovering it late means reopening
+	everything written before it.
+]]
+
+local Config = {}
+
+-- Bump this when the save format changes so old data can be migrated instead of thrown away.
+Config.SCHEMA_VERSION = 1
+
+--[[
+	The state the server owns and pushes to the client. It lives here, and only here, because
+	several modules have to agree on it and a shape duplicated in two places drifts in silence.
+
+	    resources     : { [name] = { current = number, max = number } }        (ResourceManager)
+	    cooldowns     : { [slot] = secondsLeft }                               (AbilityManager)
+	    equipped      : { [slot] = abilityId }                                 (AbilityManager)
+	    globalCooldown: secondsLeft                                            (AbilityManager)
+	    cast          : { id, slot, remaining, progress } | nil                (AbilityManager)
+
+	Two of these were wrong in an earlier draft and are worth the note:
+
+	`cooldowns` is keyed by SLOT, not by ability id. A loadout may hold the same ability on two
+	slots, and keying by id collapses them into one cooldown that the client then draws twice —
+	or once, for two slots. A hotbar is a list of slots; the client draws it by slot.
+
+	`cast` carries `remaining` (seconds left) and `progress` (0 to 1), not an `endsAt` timestamp.
+	The client's clock is not the server's, so a deadline it has to compare against its own time is
+	a deadline it will get wrong by however far the two clocks disagree.
+
+	Note what is absent: the client is never told a damage number, a hit result, a cost or an
+	effect. It gets what it needs to draw a bar and play an animation.
+]]
+Config.STATE_FIELDS = { "resources", "cooldowns", "equipped", "globalCooldown", "cast" }
+
+-- The subset AbilityManager is responsible for, kept next to the full list rather than derived
+-- from it, so a test can check the manager emits exactly this and nothing else.
+--
+-- Split into required and optional because `cast` is absent whenever nobody is casting, and in Lua
+-- an absent key and a nil value are the same thing: a check written as `snapshot[field] ~= nil`
+-- over one flat list silently depends on a cast being in progress to pass. That is the coupling
+-- this split removes — the test now runs in both states and says so.
+Config.MANAGER_REQUIRED_FIELDS = { "cooldowns", "equipped", "globalCooldown" }
+Config.MANAGER_OPTIONAL_FIELDS = { "cast" }
+
+-- Seconds added after any ability fires. Stops two different keys being mashed in one frame
+-- from producing two effects, and is short enough that it never feels unresponsive.
+Config.GLOBAL_COOLDOWN = 0.35
+
+-- How often the server ticks cooldowns and resource regeneration.
+Config.TICK_RATE = 0.1
+
+-- Resource pools. `regen` is per second, and 0 means the pool only refills another way.
+Config.RESOURCES = {
+	mana = { max = 100, regen = 6, start = 100 },
+	stamina = { max = 100, regen = 12, start = 100 },
+}
+
+-- A definition may be listed here and nowhere else until it is equipped.
+Config.MAX_EQUIPPED = 4
+
+Config.CAST = {
+	-- Taking damage interrupts a cast. Turn it off for a more forgiving game, but the cost is
+	-- that a long cast becomes an uninterruptible free win in a duel.
+	cancelOnDamage = true,
+	-- Moving does not interrupt. Roblox players move constantly; cancelling on movement makes
+	-- cast times feel like a bug rather than a mechanic.
+	cancelOnMove = false,
+}
+
+Config.EFFECT_LIMITS = {
+	-- Caps used by validation, so a mistyped number in a definition is caught at load instead of
+	-- turning into a one-shot kill nobody can explain. These are sanity limits, not balance:
+	-- a definition that needs more than this is far more likely to be a typo than a design.
+	maxDamage = 500,
+	maxHeal = 500,
+	maxDuration = 30,
+	maxRadius = 200,
+	maxDashDistance = 200,
+	-- An instant, free ability that hits at least this hard is almost certainly a mistake.
+	-- Deliberately a warning and not an error: a framework informs, it does not decide for the
+	-- game. A stricter consumer can promote it, an experimental one can ignore it.
+	spammableDamageThreshold = 20,
+}
+
+-- Strings a PLAYER can see. Kept out of the modules on purpose: a framework should not decide
+-- what language someone else's game speaks. A consumer overrides this table at startup.
+Config.MESSAGES = {
+	abilityNotEquipped = "You do not have that ability equipped.",
+	abilityOnCooldown = "That ability is not ready yet.",
+	notEnoughResources = "Not enough resources.",
+	castInterrupted = "Your cast was interrupted.",
+	alreadyCasting = "You are already casting.",
+	invalidTarget = "That target is not valid.",
+}
+
+return Config
+```
+
 ## How to test it
 
 ```
@@ -505,16 +618,86 @@ stylua --check src/ tests/   # prints nothing
 The Bootstrap has no suite and cannot have one: it is the file that needs a server. What it
 has is a playtest, and the check that matters is that a snapshot reaches the client.
 
+## What is left in this phase
+
+Declared rather than discovered, which is the whole point of a list like this.
+
+### Target selection does not exist
+
+**Every ability in this kit is self-cast.** The intent carries no target, nothing on the server
+resolves one, and the heartbeat applies each firing with `source = unit, target = unit`.
+
+The consequence is concrete: `Fireball.luau` says it "burns a single target", `Config` has
+`range = 60`, and **Fireball burns its caster**. Same for Poison. This is not a code bug — the code
+does what it says — it is a functional gap that this phase does not cover, and the definitions have
+been describing behaviour since phase 1 that nothing implements.
+
+Target acquisition belongs to a later phase, and it has exactly two honest shapes:
+
+- a **raycast** from the caster's CFrame along its look vector, bounded by the definition's range,
+  decided entirely on the server; or
+- the client supplies a **reference** (a target Instance), which the server **validates** — is it
+  alive, is it in range, is it a legal target — before using it.
+
+What is not an option is the third one: taking the client's word for it. That is the same seam
+`Net.validateIntent` exists to hold.
+
+### Death and respawn: wired in this round
+
+`reset()` (phase 2), `refill()` (phase 4a) and `clear()` (phase 4b) were written, tested and
+commented as the behaviour of a respawn — and **nothing ever called them**, because no
+`CharacterAdded` was connected. The repro was exact: die at 0.3s of a 0.4s cast, the cast completes,
+the firing is discarded in the heartbeat (`unit == nil`), the mana is spent, and the player comes back
+with cooldowns and pools untouched.
+
+It is now wired, and the old character's effects are dropped by reference so a corpse does not keep
+its poison.
+
+### An interrupted cast is a paid cast — deliberately
+
+The cost is spent at the **commit point, which is the activation and not the firing**. So a Fireball
+interrupted at 0.3s of 0.4s has paid and produced nothing.
+
+This is written down because phase 2's own rule says *"charging for a cast that never happened is
+unforgivable"*, and the two statements have to be reconciled rather than left to contradict each
+other in different files. The reconciliation:
+
+- **the cost is paid for the activation**, and every activation is a legal, validated, player-chosen
+  action. Interruption is a consequence of combat, not a failure of the system;
+- the alternative is a **refund path**, which means the server tracks what each cast has paid and
+  reconciles it on every interrupt, cancel and disconnect — a state machine whose whole job is to
+  undo things, and a source of the exact bug class this kit keeps hunting;
+- **a game that wants the forgiving version has `resources:restore`**, which is why that function
+  exists and why `ResourceManagerSpec` covers it.
+
+If the rule and the design ever have to agree in one sentence, it is this: **the activation was
+real, so it was charged; the cast was interrupted, so nothing happened.**
+
+### `MANAGER_FIELDS` split, confirmed
+
+Split between phase 3 and phase 5, and the presumption is correct: it is the phase 3 lesson written
+into the config. `cast` is **optional by design** — it is absent whenever nobody is casting — and a
+drift check that asks "is every declared field present?" cannot tell *absent because it is nil* from
+*absent because somebody forgot it*. The two lists are what makes the difference expressible:
+
+- `MANAGER_REQUIRED_FIELDS` — the snapshot must carry these, always;
+- `MANAGER_OPTIONAL_FIELDS` — these may be absent, and their absence is a legal state rather than a
+  missing field.
+
+The check that keeps it honest runs in both directions: a field the snapshot carries that the config
+does not declare fails, and a required field that the snapshot omits fails.
+
 ## What is verified, and what is not
 
 **Verified in the playtest:** the Bootstrap runs, `AbilityKitNet` and both remotes exist, the
 player has a character, and the player-already-present fix is in.
 
 **Not yet verified:** that the snapshot actually reaches the client, that an intent refused
-reaches the log, that activating spends the mana, and that stopping the playtest leaves
-nothing behind. The fix for the boot bug landed after the playtest that found it, so the
-re-run is the next step — and a phase is not finished on the strength of a fix that has not
-been watched working.
+reaches the log, that activating spends the mana, that a death restores the pools, and that stopping
+the playtest leaves nothing behind. The boot fix and the `CharacterAdded` wiring both landed after
+the playtest that motivated them, so the re-run is the next step — and a phase is not finished on
+the strength of a fix that has not been watched working. The playtest has one case per feature, and
+two of them have never been watched.
 
 ## The numbers
 
