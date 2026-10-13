@@ -1,24 +1,24 @@
 # Phase 1 — the two review bugs, fixed
 
-Both were real. Both reproduced on the machine before any edit, and both are shown here with
-the same probe run against the corrected code.
+Both were real. Both were reproduced on the machine **before** any edit, and both are shown
+here re-run against the corrected code.
 
 ## Bug 1 — `validateCatalog` could not detect a duplicate
 
-`for id, definition in pairs(catalog)` gives the **table key**, and on an array that key is
+`for id, definition in pairs(catalog)` yields the **table key**, and on an array that key is
 1, 2, 3… Table keys are unique by construction, so `seen[id]` could never collide. The check
 read like a guarantee and enforced nothing.
 
 ```
-before:   { Fireball, Fireball }  ->  0 errors
-after:    { Fireball, Fireball }  ->  1 error: FIREBALL: duplicate id 'FIREBALL'
+before:   { Fireball, Fireball }   ->   0 errors
+after:    { Fireball, Fireball }   ->   1 error: FIREBALL: duplicate id 'FIREBALL'
 ```
 
 It now keys on `definition.id`, iterates with `pairs` so both an array and a dict are
-accepted, uses the definition's own id as the message prefix, and guards non-table entries:
+accepted, prefixes messages with the definition's own id, and guards non-table entries:
 
 ```
-{ Fireball, "junk" }  ->  <entry at key 2>: definition is not a table
+{ Fireball, "junk" }   ->   <entry at key 2>: definition is not a table
 ```
 
 ## Bug 2 — `get()` returned nil for every ability, always
@@ -27,13 +27,13 @@ The catalog returned an array; `get(id)` does `catalog[id]` with a string key. O
 that is nil — for every ability, in every phase that followed.
 
 ```
-before:   catalog["FIREBALL"]                         ->  nil
+before:   catalog["FIREBALL"]                            ->  nil
 after:    AbilityDefinition.get("FIREBALL").displayName  ->  Fireball
           AbilityDefinition.get("NOPE")                   ->  nil   (still correct)
 ```
 
-The catalog now validates the collected array **before** indexing, refuses to start if the
-catalog is invalid, and builds a dict keyed by `definition.id`.
+The catalog now validates the collected array **before** indexing, refuses to start when the
+catalog is invalid, and returns a dict keyed by `definition.id`.
 
 ## Why the existing test passed while the code was broken
 
@@ -46,7 +46,7 @@ was right. The new cases use an array, which is what `init.luau` passes.
 
 ### `src/shared/AbilityDefinition.luau`
 
-*`validateCatalog` is the changed part; everything else is as it was.*
+*`validateCatalog` is the changed part; the rest of the module is untouched.*
 
 ```lua
 --[[
@@ -333,7 +333,11 @@ function AbilityDefinition.validateCatalog(catalog)
 
 	for key, definition in pairs(catalog) do
 		local label
-		if type(definition) == "table" and type(definition.id) == "string" and definition.id ~= "" then
+		if
+			type(definition) == "table"
+			and type(definition.id) == "string"
+			and definition.id ~= ""
+		then
 			label = definition.id
 		else
 			-- No usable id: name the position instead of the index-as-string, which would
@@ -347,7 +351,10 @@ function AbilityDefinition.validateCatalog(catalog)
 		end
 
 		if seen[definition.id] then
-			table.insert(errors, string.format("%s: duplicate id '%s'", label, tostring(definition.id)))
+			table.insert(
+				errors,
+				string.format("%s: duplicate id '%s'", label, tostring(definition.id))
+			)
 		end
 		seen[definition.id] = true
 
@@ -389,7 +396,7 @@ return AbilityDefinition
 
 ### `src/shared/abilities/init.luau`
 
-*Rewritten: validates the array, refuses to start on error, returns a dict by id.*
+*Rewritten: validates the array, refuses to start on error, returns a dict keyed by id.*
 
 ```lua
 --[[
@@ -426,10 +433,13 @@ end
 if #errors > 0 then
 	-- Refusing to start is the point. Every later phase reads this table, so one wrong entry
 	-- here shows up much later as a mysterious bug three modules away from its cause.
-	error(string.format(
-		"[ability-kit] the ability catalog is invalid, refusing to start:\n  %s",
-		table.concat(errors, "\n  ")
-	), 0)
+	error(
+		string.format(
+			"[ability-kit] the ability catalog is invalid, refusing to start:\n  %s",
+			table.concat(errors, "\n  ")
+		),
+		0
+	)
 end
 
 local catalog = {}
@@ -442,7 +452,7 @@ return catalog
 
 ### `tests/AbilityDefinitionSpec.luau`
 
-*27 cases now, including the two that would have caught these.*
+*27 cases, including the two that would have caught these bugs.*
 
 ```lua
 --[[
@@ -680,27 +690,30 @@ T("get returns the definition it was given, and nil for anything else", function
 	assert(AbilityDefinition.get(nil) == nil, "a nil id must not throw")
 end)
 
-T("get works on the dict shape the catalog builds, and fails on the array it must not be", function()
-	-- The contract the catalog has to honour. If it returned the array it collects, every
-	-- lookup would be nil and nothing would say why.
-	local fireball = require("../src/shared/abilities/Fireball")
-	local heal = require("../src/shared/abilities/Heal")
+T(
+	"get works on the dict shape the catalog builds, and fails on the array it must not be",
+	function()
+		-- The contract the catalog has to honour. If it returned the array it collects, every
+		-- lookup would be nil and nothing would say why.
+		local fireball = require("../src/shared/abilities/Fireball")
+		local heal = require("../src/shared/abilities/Heal")
 
-	local asArray = { fireball, heal }
-	local asDict = {}
-	for _, definition in ipairs(asArray) do
-		asDict[definition.id] = definition
+		local asArray = { fireball, heal }
+		local asDict = {}
+		for _, definition in ipairs(asArray) do
+			asDict[definition.id] = definition
+		end
+
+		AbilityDefinition.init(Config, asDict)
+		assert(AbilityDefinition.get("FIREBALL") == fireball, "the dict must be keyed by id")
+
+		AbilityDefinition.init(Config, asArray)
+		assert(
+			AbilityDefinition.get("FIREBALL") == nil,
+			"an array cannot be looked up by id: this is the bug the dict shape exists to prevent"
+		)
 	end
-
-	AbilityDefinition.init(Config, asDict)
-	assert(AbilityDefinition.get("FIREBALL") == fireball, "the dict must be keyed by id")
-
-	AbilityDefinition.init(Config, asArray)
-	assert(
-		AbilityDefinition.get("FIREBALL") == nil,
-		"an array cannot be looked up by id: this is the bug the dict shape exists to prevent"
-	)
-end)
+)
 
 return T.report()
 ```
@@ -711,5 +724,14 @@ return T.report()
 - `selene src/ tests/` -> **0 errors, 0 warnings**
 - `stylua --check` -> clean
 
-Neither bug could have been caught in Studio: the first fails as *silence*, and the
-second fails as `nil` three modules away from its cause. They were caught by reading.
+Neither bug was reachable in Studio: the first fails as *silence*, the second as `nil`
+three modules away from its cause. They were caught by reading the code, which is the
+only thing that finds a check that cannot fire.
+
+## One suggestion, not applied
+
+The catalog builds its dict in `init.luau`, which requires Roblox and therefore cannot be
+loaded by the test suite. That means the *order* — validate the array, then index — is a
+convention rather than something a test enforces. Moving the indexing into a tested
+function (`AbilityDefinition.buildCatalog(array) -> dict, errors`) would make it structural.
+Not done, because you asked for a specific fix; say the word and it is a small change.

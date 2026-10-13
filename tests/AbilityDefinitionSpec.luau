@@ -258,4 +258,51 @@ T(
 	end
 )
 
+T("a definition with no id is REPORTED, not a crash", function()
+	-- seen[definition.id] = true with a nil id is "table index is nil". The guard around the
+	-- message label did not cover the write, which is how this shipped.
+	AbilityDefinition.init(Config, {})
+	local ok, result = pcall(function()
+		return AbilityDefinition.validateCatalog({
+			{ displayName = "no id here", effects = { { kind = "damage", amount = 5 } } },
+		})
+	end)
+	assert(ok, "validateCatalog must survive an entry with no id, got: " .. tostring(result))
+	assert(#result > 0, "and it must report the missing id")
+	assert(table.concat(result):find("id"), "the error has to mention the id")
+end)
+
+T("buildCatalog reports a missing init instead of building a broken catalog", function()
+	-- Bug 3's test, and the reason the build lives here at all. The suite calls init() by hand
+	-- everywhere, which is exactly why it missed this: the real catalog validates during
+	-- require, before any other module has had the chance to call init.
+	AbilityDefinition.init(nil, nil)
+	local catalog, errors =
+		AbilityDefinition.buildCatalog({ require("../src/shared/abilities/Fireball") })
+	assert(catalog == nil, "an unusable catalog must come back as nil, not as a table")
+	assert(#errors > 0, "and the reason must be reported")
+	assert(table.concat(errors):find("init"), "specifically, that init was never called")
+	AbilityDefinition.init(Config, {})
+end)
+
+T("buildCatalog returns a dict keyed by id for a valid array", function()
+	local a, b = valid(), valid()
+	a.id, b.id = "ALPHA", "BETA"
+	AbilityDefinition.init(Config, {})
+	local catalog, errors = AbilityDefinition.buildCatalog({ a, b })
+	assert(#errors == 0, "a valid array must produce no errors")
+	assert(catalog.ALPHA == a and catalog.BETA == b, "and be keyed by definition.id")
+end)
+
+T("buildCatalog refuses to build at all when two ids collide", function()
+	-- The alternative — return the dict and let the second entry overwrite the first — is how
+	-- a duplicate becomes undetectable: after indexing, the evidence is gone.
+	local a, b = valid(), valid()
+	a.id, b.id = "TWICE", "TWICE"
+	AbilityDefinition.init(Config, {})
+	local catalog, errors = AbilityDefinition.buildCatalog({ a, b })
+	assert(catalog == nil, "a duplicate must produce no catalog at all")
+	assert(#errors > 0, "and say why")
+end)
+
 return T.report()

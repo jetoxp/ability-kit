@@ -299,13 +299,17 @@ function AbilityDefinition.validateCatalog(catalog)
 			continue
 		end
 
-		if seen[definition.id] then
-			table.insert(
-				errors,
-				string.format("%s: duplicate id '%s'", label, tostring(definition.id))
-			)
+		-- Only a usable string id can be a duplicate. The guard around `label` above is NOT
+		-- enough: it protects the message, not the write, and `seen[nil] = true` is a Lua error
+		-- ("table index is nil"). A definition with no id is reported by validate() a few lines
+		-- down, so this branch exists purely so the bookkeeping survives the trip there.
+		local id = definition.id
+		if type(id) == "string" and id ~= "" then
+			if seen[id] then
+				table.insert(errors, string.format("%s: duplicate id '%s'", label, id))
+			end
+			seen[id] = true
 		end
-		seen[definition.id] = true
 
 		local defErrors, defWarnings = AbilityDefinition.validate(definition)
 		for _, message in ipairs(defErrors) do
@@ -317,6 +321,32 @@ function AbilityDefinition.validateCatalog(catalog)
 	end
 
 	return errors, warnings
+end
+
+--[[
+	Turns a list of definitions into the id-keyed catalog the rest of the game looks up.
+
+	This exists as a function rather than as code inside the catalog file for one reason: the
+	catalog file requires Roblox and cannot be loaded by the test suite, so anything living there
+	is untestable by definition — which is exactly how a missing init() shipped. Here the entire
+	order is covered by tests: validate the array while a duplicate is still twice visible, then
+	index it.
+
+	Returns nil plus the errors when the catalog is unusable, and that is structural, not
+	cosmetic: the only way to receive a catalog is to receive one that had no errors, so a caller
+	cannot half-succeed and let a broken table travel three modules before anyone notices.
+]]
+function AbilityDefinition.buildCatalog(definitions)
+	local errors, warnings = AbilityDefinition.validateCatalog(definitions)
+	if #errors > 0 then
+		return nil, errors, warnings
+	end
+
+	local catalog = {}
+	for _, definition in ipairs(definitions) do
+		catalog[definition.id] = definition
+	end
+	return catalog, errors, warnings
 end
 
 -- Reads one definition out of the injected catalog. Returns nil rather than throwing, because a

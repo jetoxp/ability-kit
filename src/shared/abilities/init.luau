@@ -1,21 +1,18 @@
 --[[
 	init.luau — the ability catalog.
 
-	Two things this file must get right, and both were wrong in review:
+	Thin on purpose. Everything that can be tested lives in AbilityDefinition.buildCatalog; what
+	is left here is only the part that cannot be, because it needs Roblox: the requires.
 
-	1. The game looks abilities up BY ID. An array is not a lookup table: `catalog["FIREBALL"]`
-	   on an array is nil, so every lookup would have missed. This returns a dict keyed by
-	   definition.id, which is the key AbilityDefinition.get() reads.
-
-	2. It validates BEFORE indexing. Two entries can share an id inside the array, and building
-	   the dict first would let one silently overwrite the other — after which the duplicate is
-	   undetectable, because the array that carried the evidence is gone. The check has to run on
-	   the array, while both copies still exist.
-
-	Requiring the ability modules is why this file is one of very few allowed to require others.
+	The Config line is not decoration. validate() reports "init was never called" for every
+	definition when no config has been injected, and this file validates while it loads — that is,
+	before any other module has had the chance to call init. Without it every definition fails,
+	buildCatalog returns nil, and the game refuses to start over a config that was simply never
+	handed over. That was the bug: the framework made the config injectable, and then the one
+	place that validates at load time never injected it.
 ]]
-
 local AbilityDefinition = require(script.Parent.AbilityDefinition)
+local Config = require(script.Parent.Config)
 
 local definitions = {
 	require(script.Fireball),
@@ -24,14 +21,17 @@ local definitions = {
 	require(script.Heal),
 }
 
--- Validation runs on the array, not on the built dict.
-local errors, warnings = AbilityDefinition.validateCatalog(definitions)
+-- Must run before validation. The second argument is nil on purpose: the catalog is what we are
+-- about to build, and passing a previous one would hide a stale table behind a fresh one.
+AbilityDefinition.init(Config, nil)
+
+local catalog, errors, warnings = AbilityDefinition.buildCatalog(definitions)
 for _, message in ipairs(warnings) do
 	warn(string.format("[ability-kit] %s", message))
 end
-if #errors > 0 then
-	-- Refusing to start is the point. Every later phase reads this table, so one wrong entry
-	-- here shows up much later as a mysterious bug three modules away from its cause.
+if catalog == nil then
+	-- Refusing to start is the point: every later phase reads this table, so one wrong entry
+	-- here surfaces much later as a mysterious bug three modules away from its cause.
 	error(
 		string.format(
 			"[ability-kit] the ability catalog is invalid, refusing to start:\n  %s",
@@ -41,9 +41,7 @@ if #errors > 0 then
 	)
 end
 
-local catalog = {}
-for _, definition in ipairs(definitions) do
-	catalog[definition.id] = definition
-end
+-- Register it, so get(id) answers from the moment this module is required.
+AbilityDefinition.init(Config, catalog)
 
 return catalog
