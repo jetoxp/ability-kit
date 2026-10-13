@@ -78,13 +78,13 @@ Every block below is a diff against the commit the document was first generated 
 *The composition root. Read the header for what it refuses to do, the intent handler for the order,
 and `buildSession` for the respawn wiring.*
 
-`git hash-object src/server/Bootstrap.server.luau` -> `68ef17d202db`
+`git hash-object src/server/Bootstrap.server.luau` -> `489f63bbfa0d`
 
 **Changed since this document was written.** `git diff 6d30032..HEAD -- src/server/Bootstrap.server.luau`:
 
 ```diff
 diff --git a/src/server/Bootstrap.server.luau b/src/server/Bootstrap.server.luau
-index 8595b00..68ef17d 100644
+index 8595b00..489f63b 100644
 --- a/src/server/Bootstrap.server.luau
 +++ b/src/server/Bootstrap.server.luau
 @@ -61,10 +61,17 @@ local STATE_INTERVAL = 1 / 10
@@ -106,17 +106,19 @@ index 8595b00..68ef17d 100644
  		Config.MAX_EQUIPPED
  	)
  )
-@@ -80,6 +87,10 @@ local function ownerProxy(session, player)
+@@ -80,7 +87,11 @@ local function ownerProxy(session, player)
  	local character = player.Character
  	local unit = nil
  	if character ~= nil then
+-		unit = session.adapter:describe(character)
 +		-- Described fresh on every use, which today means once per player per frame. It is six table
 +		-- reads. If this ever shows up in a profile, the fix is to describe once per character and
 +		-- invalidate on CharacterAdded — not to cache blindly, because `alive` and `health.current`
 +		-- are exactly the two fields a stale copy would get wrong.
- 		unit = session.adapter:describe(character)
++		unit = session.adapter.describe(character)
  	end
  	return {
+ 		alive = unit ~= nil and unit.alive or false,
 @@ -100,6 +111,42 @@ local function buildSession(player)
  		stateClock = 0,
  	}
@@ -212,7 +214,25 @@ index 8595b00..68ef17d 100644
  		return
  	end
  
-@@ -174,6 +239,13 @@ intentRemote.OnServerEvent:Connect(function(player, payload)
+@@ -168,12 +233,30 @@ intentRemote.OnServerEvent:Connect(function(player, payload)
+ 
+ 	-- The order. `manager:activate` checks the cost against `owner.resources`, which IS the
+ 	-- ResourceManager's live pool table, so this line and the spend below cannot disagree.
+-	if not session.manager:activate(intent.slot, owner) then
++	local activated, refusal = session.manager:activate(intent.slot, owner)
++	if not activated then
++		-- The third silent return, and the one that hid the longest: the session existed, the slot
++		-- was filled, and the refusal had a reason that nobody printed.
++		print(
++			string.format(
++				"[ability-kit] %s asked for slot %d and was refused: %s",
++				player.Name,
++				intent.slot,
++				tostring(refusal)
++			)
++		)
+ 		return
+ 	end
  
  	-- Only now does anything move. The check above cannot have passed and this fail, because both
  	-- read the same table in the same frame.
@@ -226,7 +246,7 @@ index 8595b00..68ef17d 100644
  	session.resources:spend(ability:getCost())
  end)
  
-@@ -193,6 +265,12 @@ RunService.Heartbeat:Connect(function(dt)
+@@ -193,10 +276,16 @@ RunService.Heartbeat:Connect(function(dt)
  
  		for _, firing in ipairs(session.manager:advance(dt)) do
  			if unit ~= nil then
@@ -239,7 +259,12 @@ index 8595b00..68ef17d 100644
  				local events = session.effects:applyFiring(firing, {
  					source = unit,
  					target = unit,
-@@ -214,8 +292,17 @@ RunService.Heartbeat:Connect(function(dt)
+-					direction = session.adapter:directionOf(owner.character),
++					direction = session.adapter.directionOf(owner.character),
+ 				})
+ 				for _, event in ipairs(events) do
+ 					session.adapter:apply(event)
+@@ -214,8 +303,17 @@ RunService.Heartbeat:Connect(function(dt)
  
  		session.stateClock = session.stateClock + dt
  		if session.stateClock >= STATE_INTERVAL then
@@ -590,7 +615,25 @@ So the manager activates correctly, and the intent dies between the remote and t
 reason this took a probe to find**: an early return with no log is indistinguishable from nothing
 having happened, which is the same gap this phase already declared for refusals.
 
-**The root cause, found by the review that read the diff.** The seed loop for players already in the
+**Correction: the root cause was not the seed loop.** The seed loop had genuinely been deleted by an
+edit of mine — a real bug, restored — but restoring it did not fix the activation. The reason, once the
+third silent return was logged, was this:
+
+```lua
+function EffectAdapter.describe(character)   -- declared with a DOT
+unit = session.adapter:describe(character)   -- called with a COLON
+```
+
+With a colon the adapter is passed as the first argument, so inside `describe` the parameter named
+`character` *was the adapter*: `typeof(...) ~= "Instance"`, so it returned `nil`, so `owner.alive`
+became `false`, so `canActivate` refused with `invalidTarget`. The same mistake was in `directionOf`.
+Both are dot functions; `apply` and `applyAll` are colon functions and were called correctly.
+
+The seed loop bug was real and is written up below, but **it was not the one blocking activation** —
+and a document that had stopped at the first plausible cause would have been wrong in the confident
+tone of a solved problem.
+
+**The earlier candidate, and why it looked right.** The seed loop for players already in the
 game — `for _, player in ipairs(Players:GetPlayers()) do buildSession(player) end` — **had been deleted
 by an edit of mine** in the round that moved the respawn wiring into `buildSession`: the slice that
 replaced the `PlayerAdded` block took the loop with it, because the loop sat between the docblock and
@@ -612,6 +655,26 @@ Bootstrap's handler is dying silently; if it does not, the `FireServer` is not a
 activation, there is no mana spent and no cooldown set, so a death proves nothing about the respawn
 wiring and a refused intent proves nothing about the boundary. The order is: fix the wire, then watch
 boot, respawn and activation in one playtest.
+
+## Every bug in this phase lived in the same seam
+
+Four, and none of them was visible from the pure suite, because the pure suite does not cross the
+seam where two layers meet:
+
+| # | Bug | Shape |
+|---|-----|-------|
+| 1 | a speed flag that could not count | state the adapter held and the system did not know about |
+| 2 | a refresh announcing the new multiplier as the one ending | a value read after being overwritten |
+| 3 | the seed loop deleted by an edit that moved other code | a container replaced by name, taking a neighbour with it |
+| 4 | `describe` called with a colon instead of a dot | a contract crossed by a character nobody typed |
+
+Number 4 is the sharpest lesson of the phase: **the modules agreed on a contract that no type checked
+and no test executed.** `describe` promised to take a character and received an adapter. It said so
+with `nil`, and `nil` became `alive = false`, and `alive = false` became `invalidTarget` — three layers
+of correct behaviour turning one wrong character into a refusal that looked like a design decision.
+
+The seam was declared in phase 4b as "the pure modules decide, the adapter translates". What this
+phase added is that **the seam is also where nobody is looking.**
 
 ## Lessons this phase earned
 
@@ -731,22 +794,52 @@ drift check that asks "is every declared field present?" cannot tell *absent bec
 The check that keeps it honest runs in both directions: a field the snapshot carries that the config
 does not declare fails, and a required field that the snapshot omits fails.
 
+## Verified in a live server, at last
+
+One playtest, after the fix. Activation, spend, cooldown, refusal and respawn, all observed:
+
+```
+antes:              mana=100/100 | cooldowns {0,0,0,0} | cast=false
+a 0.25s:            mana=76/100  | cast=true                       <- spent at the activation
+a 1.25s:            mana=82/100  | cooldowns {1=2.22} | cast=false  <- fired, on cooldown
+segunda activación: mana=83.9    | cooldowns {1=1.92} | cast=false  <- refused, and charged nothing
+```
+
+Note the third line: the second activation was refused by the cooldown **and did not spend again**,
+which is the commit-point decision observed working rather than described.
+
+And the respawn, which had been promised by three functions nobody called:
+
+```
+tras el respawn:  mana=100.0/100 | cooldowns {1=0.00, 2=0.00, 3=0.00, 4=0.00} | cast=false
+personaje:        health=100/100
+```
+
+`refill()` took the pool back to full from the ~76 it had been spent down to, and `reset()` cleared a
+cooldown that was at 2.22. The Fireball also damaged its caster, which is the self-cast limitation
+observed rather than inferred.
+
+**Not observed:** `clear(character)` on death. Effects do not travel in the snapshot, so the suite of
+phase 4b covers that function and the wiring is the same event just demonstrated — but it was not
+watched, and it is listed as such.
+
 ## What is verified, and what is not
 
 **Verified in the playtest:** the Bootstrap runs, `AbilityKitNet` and both remotes exist, the
 player has a character, and the player-already-present fix is in.
 
-**Not yet verified:** that the snapshot actually reaches the client, that an intent refused
-reaches the log, that activating spends the mana, that a death restores the pools, and that stopping
-the playtest leaves nothing behind. The boot fix and the `CharacterAdded` wiring both landed after
-the playtest that motivated them, so the re-run is the next step — and a phase is not finished on
-the strength of a fix that has not been watched working. The playtest has one case per feature, and
-two of them have never been watched.
+**Verified:** the bootstrap runs, the remotes exist, a session is built for a player already in the
+game, an intent reaches an activation, the cost is spent at the activation, the cast completes, the
+cooldown is set, a second activation is refused without charging, and death restores the pools and
+clears the cooldowns.
+
+**Not verified:** `clear(character)` on death (not observable in the snapshot), and that stopping the
+playtest leaves nothing behind.
 
 ## The numbers
 
 - Tests: **179** across 6 suites — AbilityDefinitionSpec 42 · AbilitySpec 34 · AbilityManagerSpec 35 · ResourceManagerSpec 30 · EffectSystemSpec 31 · NetSpec 7
-- Lines: **2656 source + 2178 tests** = 4834
-- Commits: **36**
+- Lines: **2689 source + 2178 tests** = 4867
+- Commits: **42**
 - selene: 0 errors, 0 warnings · stylua: clean
-- Playtest: ran, found one bug, stopped. The re-run is pending.
+- Playtest: ran four times, found four bugs, and the last run verified activation, spend, cooldown, refusal and respawn.
