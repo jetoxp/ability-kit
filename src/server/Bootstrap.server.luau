@@ -281,7 +281,13 @@ RunService.Heartbeat:Connect(function(dt)
 
 		for _, firing in ipairs(session.manager:advance(dt)) do
 			if unit ~= nil then
-				local direction = session.adapter.directionOf(owner.character)
+				local rawDirection = session.adapter.directionOf(owner.character)
+				-- The resolver reads plain points; directionOf returns a Vector3, and this is the
+				-- boundary where it becomes one. The effect context keeps the Vector3, because the
+				-- adapter is the side that turns it back into a CFrame.
+				local direction = rawDirection ~= nil
+						and { x = rawDirection.X, y = rawDirection.Y, z = rawDirection.Z }
+					or { x = 0, y = 0, z = 0 }
 				local definition = AbilityDefinition.get(firing.id)
 				local targeting = definition and definition.targeting or "self"
 				-- The effects come from the DEFINITION, not from the firing: a firing carries what

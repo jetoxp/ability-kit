@@ -58,12 +58,18 @@ function EffectAdapter.describe(character)
 		return nil
 	end
 	local root = rootOf(character)
+	local at = root and root.Position or Vector3.zero
 	return {
 		id = character,
 		instance = character,
 		alive = humanoid.Health > 0,
 		health = { current = humanoid.Health, max = humanoid.MaxHealth },
-		position = root and root.Position or Vector3.zero,
+		-- PLAIN { x, y, z }, not a Vector3. This is THE conversion the pure modules are written
+		-- against, and it was missing for a whole phase: the resolver checks `type(value.x)`, a
+		-- Vector3 has no lowercase `.x`, so every candidate and every origin was rejected and the
+		-- shot resolved to nobody. The suite could not see it because the suite speaks plain tables
+		-- by construction -- this is the boundary the split depends on, and nobody was minding it.
+		position = { x = at.X, y = at.Y, z = at.Z },
 	}
 end
 

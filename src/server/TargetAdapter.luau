@@ -19,6 +19,11 @@
 local TargetAdapter = {}
 TargetAdapter.__index = TargetAdapter
 
+-- Vector3 -> { x, y, z }, the shape every pure module reads. See the note in EffectAdapter.describe.
+local function point(v)
+	return { x = v.X, y = v.Y, z = v.Z }
+end
+
 function TargetAdapter.new(config, effectAdapter)
 	local self = setmetatable({}, TargetAdapter)
 	self.config = config
@@ -73,9 +78,9 @@ function TargetAdapter:castRay(casterCharacter, range, direction)
 
 	local result = workspace:Raycast(origin, reach, params)
 	if result ~= nil then
-		return result.Position, result.Instance
+		return point(result.Position), result.Instance
 	end
-	return origin + reach, nil
+	return point(origin + reach), nil
 end
 
 return TargetAdapter
