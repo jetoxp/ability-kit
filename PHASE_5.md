@@ -75,16 +75,16 @@ Every block below is a diff against the commit the document was first generated 
 
 ### `src/server/Bootstrap.server.luau`
 
-*The composition root. Read the header for what it refuses to do, the intent handler for the order, and `buildSession` for the respawn wiring.*
+*The composition root. Read the header for what it refuses to do, the intent handler for the order,
+and `buildSession` for the respawn wiring.*
 
-`git hash-object src/server/Bootstrap.server.luau` -> `a690d65c5621`
+`git hash-object src/server/Bootstrap.server.luau` -> `68ef17d202db`
 
-**Changed since this document was written.** The diff is `git diff 6d30032..HEAD -- src/server/Bootstrap.server.luau` —
-apply it to the file as it stood and you get the file described here.
+**Changed since this document was written.** `git diff 6d30032..HEAD -- src/server/Bootstrap.server.luau`:
 
 ```diff
 diff --git a/src/server/Bootstrap.server.luau b/src/server/Bootstrap.server.luau
-index 8595b00..a690d65 100644
+index 8595b00..68ef17d 100644
 --- a/src/server/Bootstrap.server.luau
 +++ b/src/server/Bootstrap.server.luau
 @@ -61,10 +61,17 @@ local STATE_INTERVAL = 1 / 10
@@ -160,20 +160,20 @@ index 8595b00..a690d65 100644
  	return session
  end
  
-@@ -122,20 +169,18 @@ Players.PlayerAdded:Connect(function(player)
- 	buildSession(player)
- end)
+@@ -124,8 +171,10 @@ end)
  
---- And the players who are already here. A script connects PlayerAdded at the point it runs, and in
---- Studio that point is reached AFTER the local player has joined — so the event never fires for them
+ -- And the players who are already here. A script connects PlayerAdded at the point it runs, and in
+ -- Studio that point is reached AFTER the local player has joined — so the event never fires for them
 --- and they get no session: no state, no intents, nothing. This is not a Studio quirk to work around;
 --- the same thing happens to anyone already in a server when a script reloads.
--for _, player in ipairs(Players:GetPlayers()) do
--	buildSession(player)
--end
--
- Players.PlayerRemoving:Connect(function(player)
- 	local session = sessions[player]
++-- and they get no session: no state, no intents, and an intent handler that returns in silence. This
++-- is not a Studio quirk to work around; the same thing happens to anyone already in a server when a
++-- script reloads. (It was deleted by an edit in this phase and restored by the review that noticed
++-- buildSession promising it. The prose and the code now say the same thing.)
+ for _, player in ipairs(Players:GetPlayers()) do
+ 	buildSession(player)
+ end
+@@ -135,7 +184,13 @@ Players.PlayerRemoving:Connect(function(player)
  	if session ~= nil then
  		-- Nothing to save: this kit persists no state. What there is to do is let go of it, so a
  		-- session cannot outlive the player it belongs to.
@@ -188,7 +188,31 @@ index 8595b00..a690d65 100644
  		sessions[player] = nil
  	end
  end)
-@@ -174,6 +219,13 @@ intentRemote.OnServerEvent:Connect(function(player, payload)
+@@ -143,6 +198,9 @@ end)
+ intentRemote.OnServerEvent:Connect(function(player, payload)
+ 	local session = sessions[player]
+ 	if session == nil then
++		-- Diagnostic, and permanent. An early return with no log is indistinguishable from nothing
++		-- having happened: this exact return hid the missing seed loop through a whole playtest.
++		print(string.format("[ability-kit] intent from %s, who has no session", player.Name))
+ 		return
+ 	end
+ 
+@@ -161,6 +219,13 @@ intentRemote.OnServerEvent:Connect(function(player, payload)
+ 
+ 	local ability = session.manager:getAbility(intent.slot)
+ 	if ability == nil then
++		print(
++			string.format(
++				"[ability-kit] intent from %s for slot %d, which is empty",
++				player.Name,
++				intent.slot
++			)
++		)
+ 		return
+ 	end
+ 
+@@ -174,6 +239,13 @@ intentRemote.OnServerEvent:Connect(function(player, payload)
  
  	-- Only now does anything move. The check above cannot have passed and this fail, because both
  	-- read the same table in the same frame.
@@ -202,7 +226,7 @@ index 8595b00..a690d65 100644
  	session.resources:spend(ability:getCost())
  end)
  
-@@ -193,6 +245,12 @@ RunService.Heartbeat:Connect(function(dt)
+@@ -193,6 +265,12 @@ RunService.Heartbeat:Connect(function(dt)
  
  		for _, firing in ipairs(session.manager:advance(dt)) do
  			if unit ~= nil then
@@ -215,16 +239,18 @@ index 8595b00..a690d65 100644
  				local events = session.effects:applyFiring(firing, {
  					source = unit,
  					target = unit,
-@@ -214,8 +272,15 @@ RunService.Heartbeat:Connect(function(dt)
+@@ -214,8 +292,17 @@ RunService.Heartbeat:Connect(function(dt)
  
  		session.stateClock = session.stateClock + dt
  		if session.stateClock >= STATE_INTERVAL then
 -			session.stateClock = 0
 -			stateRemote:FireClient(player, snapshot(session))
-+			-- Subtract rather than zero: the overshoot belongs to the next interval. Zeroing it
-+			-- loses time on every send, which is the same "time that goes missing" shape this kit
-+			-- has already met twice — in the cooldown and in the DoT.
-+			session.stateClock -= STATE_INTERVAL
++			-- The overshoot belongs to the next interval, but only whole intervals of it: a stale
++			-- snapshot is not worth catching up on. `-= STATE_INTERVAL` alone would fire once per
++			-- frame until the backlog drained — a burst nobody asked for after a long frame — so the
++			-- backlog is dropped and exactly one snapshot goes out.
++			local intervals = math.floor(session.stateClock / STATE_INTERVAL)
++			session.stateClock -= intervals * STATE_INTERVAL
 +			if player.Parent ~= nil then
 +				-- A player can leave between the heartbeat starting and this line. Firing at a
 +				-- departed player is silent, but checking costs one comparison.
@@ -494,6 +520,35 @@ Config.MESSAGES = {
 
 return Config
 ```
+### `src/shared/Ability.luau` — the `interrupt()` comment
+
+*Changed this phase: "a cancelled cast costs nothing" was true of the ability and read as if it were
+true of the player's mana. The diff is the whole change.*
+
+`git hash-object src/shared/Ability.luau` -> `bf3b65e4e5c9`
+
+```diff
+diff --git a/src/shared/Ability.luau b/src/shared/Ability.luau
+index 88cdc06..bf3b65e 100644
+--- a/src/shared/Ability.luau
++++ b/src/shared/Ability.luau
+@@ -252,9 +252,11 @@ function Ability:interrupt(reason)
+ 	self.castRemaining = 0
+ 	self.effectsEmitted = false
+ 
+-	-- A cancelled cast costs nothing and goes on no cooldown. Charging for a cast that never
+-	-- happened is the kind of thing players notice and never forgive.
+-	-- The reason comes from inside the kit, but a caller can pass anything. Falling back keeps a
++	-- A cancelled cast goes on no cooldown, and this module charges nothing for it — but "nothing"
++	-- here is about the ABILITY: its own state and its cooldown. What the cast may already have cost
++	-- the player in resources is not this module's business, and phase 5 decided it: the cost is paid
++	-- at the activation, so an interrupted cast is a paid cast. See "An interrupted cast is a paid
++	-- cast" in PHASE_5.md before changing either half of that.
+ 	-- refusal explainable: a nil here reaches the player as an empty message and reads as a bug.
+ 	local message = self.config.MESSAGES[reason or "castInterrupted"]
+ 		or self.config.MESSAGES.castInterrupted
+```
+
 ## How to test it
 
 ```
@@ -535,7 +590,21 @@ So the manager activates correctly, and the intent dies between the remote and t
 reason this took a probe to find**: an early return with no log is indistinguishable from nothing
 having happened, which is the same gap this phase already declared for refusals.
 
-**The probe that isolates it, for the next run:** a second `OnServerEvent` connected to the `Intent`
+**The root cause, found by the review that read the diff.** The seed loop for players already in the
+game — `for _, player in ipairs(Players:GetPlayers()) do buildSession(player) end` — **had been deleted
+by an edit of mine** in the round that moved the respawn wiring into `buildSession`: the slice that
+replaced the `PlayerAdded` block took the loop with it, because the loop sat between the docblock and
+`PlayerRemoving`.
+
+So the local player, who in Studio always exists before the script runs, had no session — and
+`if session == nil then return end` said nothing about it. The prose in `buildSession` promised "the
+seed loop for whoever is already here" while the same diff deleted it. **The document was the only
+place the two disagreed, and the diff is what exposed it.**
+
+It is restored, and both silent returns now print. That is the part that matters: the loop was a
+one-line bug, but **it survived a whole playtest because the code was designed to fail quietly.**
+
+**The probe that would have isolated it in one call:** a second `OnServerEvent` connected to the `Intent`
 remote from the server, plus a client `FireServer`. If the probe fires, the wire is fine and the
 Bootstrap's handler is dying silently; if it does not, the `FireServer` is not arriving.
 
@@ -543,6 +612,21 @@ Bootstrap's handler is dying silently; if it does not, the `FireServer` is not a
 activation, there is no mana spent and no cooldown set, so a death proves nothing about the respawn
 wiring and a refused intent proves nothing about the boundary. The order is: fix the wire, then watch
 boot, respawn and activation in one playtest.
+
+## Lessons this phase earned
+
+Two, and both are about the same failure mode: **something true that nothing says out loud.**
+
+1. **An early return with no log is indistinguishable from nothing having happened.** A missing seed
+   loop, an empty slot and a perfectly working request that changed nothing all look identical from
+   the outside. Every `return` on a path a client can reach now says why — not for debugging this
+   bug, but because the next one is cheaper to find this way.
+
+2. **A document whose prose and whose paste can disagree will disagree.** Four rounds in a row this
+   document described behaviour its own diff did not contain — and the fix each time was a correction,
+   never a mechanism. The mechanism is: **generate the document from git and from the test run, and
+   never patch it by hand.** Every block below is generated; the moment one is edited, the clock
+   restarts on the same class of error.
 
 ## The regression this round introduced and removed
 
