@@ -39,9 +39,15 @@ Config.SCHEMA_VERSION = 1
 ]]
 Config.STATE_FIELDS = { "resources", "cooldowns", "equipped", "globalCooldown", "cast" }
 
--- The subset AbilityManager is responsible for. Kept next to the full list, rather than derived
+-- The subset AbilityManager is responsible for, kept next to the full list rather than derived
 -- from it, so a test can check the manager emits exactly this and nothing else.
-Config.MANAGER_FIELDS = { "cooldowns", "equipped", "globalCooldown", "cast" }
+--
+-- Split into required and optional because `cast` is absent whenever nobody is casting, and in Lua
+-- an absent key and a nil value are the same thing: a check written as `snapshot[field] ~= nil`
+-- over one flat list silently depends on a cast being in progress to pass. That is the coupling
+-- this split removes — the test now runs in both states and says so.
+Config.MANAGER_REQUIRED_FIELDS = { "cooldowns", "equipped", "globalCooldown" }
+Config.MANAGER_OPTIONAL_FIELDS = { "cast" }
 
 -- Seconds added after any ability fires. Stops two different keys being mashed in one frame
 -- from producing two effects, and is short enough that it never feels unresponsive.

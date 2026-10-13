@@ -929,6 +929,19 @@ Six more, and the shapes are different from phase 1's:
 | 5 | `activate`'s third return varied by branch, so the caller's logging depended on which check failed | a return contract with exceptions |
 | 6 | this document had raw test output pasted into its numbers block | a document generated rather than written |
 
+Two smaller changes came from the same review and touch suites this phase does not own, so they
+are recorded here rather than left as a silent count change: **AbilitySpec went from 33 to 34 cases**
+(a case for `startActivation` clearing a leftover `castOvershoot`, from an earlier observation in the
+same review), and AbilityDefinitionSpec has stood at 40 since its own phase.
+
+Two decisions were made rather than fixed:
+
+- **`cooldowns` is keyed by slot, not by id.** A hotbar is a list of slots and the client draws it
+  that way; an ability id is not unique on it. The phase-1 pin was wrong, not the manager.
+- **`cast` carries `remaining` and `progress`, not an `endsAt`.** The client's clock is not the
+  server's, so a deadline it must compare against its own time is one it will get wrong by however
+  far the two disagree.
+
 Finding 2 is the one that mattered most. `Config` claimed a shape, `AbilityManager` produced a
 different one, and nothing compared them — so they would have drifted again the first time
 either changed. Both are now one list (`Config.STATE_FIELDS`, and the manager's subset), and a
@@ -955,6 +968,25 @@ Two decisions were made rather than fixed:
   deducting is the ResourceManager's, so it happens once instead of per ability.
 - **Applying effects.** The firings carry them; nothing reads them yet.
 - **The remote, the Bootstrap, the character.** Phase 5. Nothing here has touched a player.
+
+## Known gaps and carried items
+
+Written down so they are deliberate rather than forgotten.
+
+**Not gaps, despite being queried in review:** the validator's field whitelist, the `range` rule and
+`dash.duration` all landed in commit `25a9641` with their cases — an unknown field warns and names
+the field that was meant, and a bad `range` or `dash.duration` is an error. What remains of the typo
+case is that the ability **still runs** after warning, which is the severity chosen on purpose: a
+framework informs, it does not veto.
+
+**Genuinely open, each with its home:**
+
+- **An empty catalog warns instead of erroring**, by decision, so a game under construction can start
+  with no abilities. The kit will then load, run, and do nothing.
+- **The `active` instant's refusal reads `abilityOnCooldown`.** Not literally what is happening, but
+  what the player experiences; pinned by a case and commented in `Ability:canActivate`.
+- **Nothing has run against a real server.** Every module so far is logic with a suite. Multi-player
+  behaviour, the replication and the engine contact all arrive with the Bootstrap.
 
 ## Still not verified
 

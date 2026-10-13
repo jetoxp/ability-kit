@@ -109,9 +109,11 @@ function Ability:canActivate(owner)
 		return false, "alreadyCasting"
 	end
 	if self.state ~= Ability.STATES.idle then
-		-- Covers cooldown and the single active instant. Reaching active from outside is not
-		-- possible through the public surface, but a state machine that only checks the states it
-		-- expects is the one that gets stuck.
+		-- Covers cooldown, and the single `active` instant: a frame may advance by zero, leaving an
+		-- ability that has started but not yet handed over its effects. The reason given is
+		-- `abilityOnCooldown`, which is not literally true of `active` but is what the player
+		-- experiences — the key does nothing right now — and it is the only refusal key a client
+		-- already knows how to draw. Deliberate, and pinned by a case in AbilityManagerSpec.
 		return false, "abilityOnCooldown"
 	end
 	if owner == nil or owner.alive == false then

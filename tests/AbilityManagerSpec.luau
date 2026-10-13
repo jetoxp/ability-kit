@@ -362,34 +362,45 @@ T("the same ability on two slots keeps two separate cooldowns", function()
 	assert(state.cooldowns[2] == 0, "and slot 2 must not inherit it")
 end)
 
-T("the snapshot carries exactly the fields Config reserves for the manager", function()
-	-- The drift check. Config is the one place the shape is written down, so a field appearing in
-	-- one side and not the other becomes a failing test instead of a divergence nobody notices.
+T("the snapshot carries exactly the fields Config declares, in both states", function()
+	-- Run twice on purpose. `cast` is optional by design, and in Lua an absent key and a nil value
+	-- are the same thing, so a check over one flat list would only pass when a cast happened to be
+	-- in progress — a test coupled to the state of the system without saying so, which is the
+	-- failure mode this phase is about. Idle and casting are both checked and both must behave.
+	local function checkSnapshot(label, snapshot)
+		for _, field in ipairs(Config.MANAGER_REQUIRED_FIELDS) do
+			assert(
+				snapshot[field] ~= nil,
+				label .. ": Config requires '" .. field .. "' and the snapshot omits it"
+			)
+		end
+
+		local declared = {}
+		for _, field in ipairs(Config.MANAGER_REQUIRED_FIELDS) do
+			declared[field] = true
+		end
+		for _, field in ipairs(Config.MANAGER_OPTIONAL_FIELDS) do
+			declared[field] = true
+		end
+
+		for name in pairs(snapshot) do
+			assert(
+				declared[name],
+				label .. ": the snapshot carries '" .. name .. "', which Config does not declare"
+			)
+		end
+	end
+
 	local m = managerWith({ [1] = "HEAL" })
+	local idle = m:toState()
+	checkSnapshot("idle", idle)
+	assert(idle.cast == nil, "idle omits the cast, which is exactly the coupled case")
+
 	m:activate(1, owner())
 	m:advance(0.2)
-	local snapshot = m:toState()
-
-	for _, field in ipairs(Config.MANAGER_FIELDS) do
-		assert(
-			snapshot[field] ~= nil,
-			"Config declares '" .. field .. "' and the snapshot omits it"
-		)
-	end
-
-	for name in pairs(snapshot) do
-		local declared = false
-		for _, field in ipairs(Config.MANAGER_FIELDS) do
-			if field == name then
-				declared = true
-				break
-			end
-		end
-		assert(
-			declared,
-			"the snapshot carries '" .. name .. "', which Config.MANAGER_FIELDS does not declare"
-		)
-	end
+	local casting = m:toState()
+	checkSnapshot("casting", casting)
+	assert(casting.cast ~= nil, "and while casting it is carried")
 end)
 
 T(
@@ -413,6 +424,38 @@ T(
 			onCasting == m:getAbility(1),
 			"a refusal on an occupied slot still names its ability"
 		)
+	end
+)
+
+T(
+	"advance(0) leaves an ability in active until a real tick, and the refusal says on-cooldown",
+	function()
+		-- The edge: an ability that started but has not been advanced past its firing instant. A frame
+		-- can legitimately advance by zero, and the ability then sits in `active` — a state that exists
+		-- for exactly one tick — until a positive dt arrives.
+		--
+		-- The refusal that produces is `abilityOnCooldown`, which is not literally what is happening
+		-- but is what a player experiences: the key does nothing right now. Pinned so a rewrite changes
+		-- it deliberately instead of by accident.
+		local m = managerWith({ [1] = "FLASH" })
+		m:activate(1, owner())
+		local ability = m:getAbility(1)
+		assert(
+			ability:getState() == Ability.STATES.active,
+			"an instant ability enters active first"
+		)
+
+		local firings = m:advance(0)
+		assert(#firings == 0, "a zero tick must fire nothing")
+		assert(ability:getState() == Ability.STATES.active, "and must not resolve the state either")
+
+		local ok, reason = m:activate(1, owner())
+		assert(not ok, "so a second press on that frame does nothing")
+		assert(reason == "abilityOnCooldown", "got: " .. tostring(reason))
+
+		local after = m:advance(0.05)
+		assert(#after == 1, "the next real tick fires it")
+		assert(ability:getState() == Ability.STATES.cooldown, "and lands on cooldown")
 	end
 )
 
