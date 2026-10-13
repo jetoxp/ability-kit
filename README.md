@@ -173,7 +173,7 @@ What the kit does not do, and why, so that a reader can tell a decision from an 
 
 ## Lessons
 
-The four that cost the most, each with the bug that produced it. They are here rather than only in the
+The five that cost the most, each with the bug that produced it. They are here rather than only in the
 phase notes because they are the transferable part.
 
 **An early return with no log is indistinguishable from nothing having happened.** A `PlayerAdded`
@@ -208,16 +208,22 @@ not catch it?* **Because the test and the code shared one reading of the problem
 from the same head that wrote the function does not verify the function; it verifies the
 misunderstanding, and files it as evidence.
 
+And a smaller one, in the same family. **A gate that reports a count without a name is a promise closed
+without saying what it promised.** The quality gate reported `0 errors, 1 warning` for several rounds,
+and the warning was a number with no noun: naming it as `unused_variable: hit` was the fix, and the
+number alone had been hiding it.
+
 ## Files
 
 ```
 src/shared/     pure modules, testable in a terminal: Config, AbilityDefinition,
                 Ability, AbilityManager, ResourceManager, EffectSystem, TargetResolver,
-                Net, and the four sample abilities
+                Net, the default loadout, and the four sample abilities
 src/server/     the only files that touch the engine: Bootstrap (composition root),
                 EffectAdapter, TargetAdapter
 src/client/     a keypress becomes an intent, and ClientState holds the last snapshot
-tests/          seven Luau suites plus the runner (the runner is not a suite); no Studio needed
+tests/          seven Luau suites, a shared test kit, and the runner (only the seven
+                Spec files are suites); no Studio needed
 PHASE_*.md      the working notes of each phase, in order, including the bugs and the
                 corrections they forced. The two most recent are the ones worth reading
                 for how the seam behaves: PHASE_5.md (the wire and the boot) and
@@ -228,10 +234,3 @@ PHASE_*.md      the working notes of each phase, in order, including the bugs an
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
-
-One closing note, because leaving it out would be the same failure in a smaller size. For several
-rounds the quality gate below reported `0 errors, 1 warning`, and the warning was reported without its
-name — a number with no noun. It was `unused_variable: hit`, a leftover capture in the heartbeat from
-the edit that split the aim direction into two shapes: the edit's reason no longer applied and the
-variable stayed. Named, and gone. A gate that reports `1` and stops there is a promise closed without
-saying what it promised.
