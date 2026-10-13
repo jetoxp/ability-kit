@@ -70,9 +70,21 @@ list — a second copy of those policies is the drift this kit exists to avoid.
 
 ## The code
 
+Every block below was regenerated from the working tree, and each carries the `git hash-object` of
+the file it came from. A reader can check any of them against the repository instead of trusting
+this document — which is the point, after an earlier version of this file pasted pre-fix code and
+made the fixes unverifiable.
+
+For the next review round the code will not be pasted whole at all: a round gets its diffs, not a
+third copy of the file. A document that duplicates a file is a document that will one day disagree
+with it.
+
+
 ### `src/shared/EffectSystem.luau`
 
 *Read `advance` for the DoT catch-up, and `applyEffect` for the stacking decision.*
+
+`git hash-object src/shared/EffectSystem.luau` -> `c0e6dc046d78`
 
 ```lua
 --[[
@@ -234,9 +246,16 @@ function EffectSystem:applyEffect(effect, abilityId, context)
 		if effect.multiplier ~= nil then
 			existing.multiplier = effect.multiplier
 		end
+		-- A refreshed DoT emits nothing. Its damage comes from the ticks, and there is no amount to
+		-- hand over here: this used to emit a `damage` event with amount = nil, which reaches the
+		-- adapter as TakeDamage(nil) and crashes in Roblox. The duration extension is the whole
+		-- effect of a refresh, and the next tick arrives through advance.
+		if effect.kind == "dot" then
+			return events
+		end
+
 		table.insert(events, {
-			kind = effect.kind == "dot" and "damage"
-				or (effect.kind == "debuff" and "debuff" or "buff"),
+			kind = effect.kind == "debuff" and "debuff" or "buff",
 			target = target,
 			stat = effect.stat,
 			multiplier = existing.multiplier,
@@ -255,6 +274,9 @@ function EffectSystem:applyEffect(effect, abilityId, context)
 		-- Held so advance can name the target of a tick without a reverse lookup.
 		target = target,
 		kind = effect.kind,
+		-- The declared duration, kept as well as `remaining`: the tick cap is derived from it, and
+		-- deriving it from a value that drains would cap the total at zero on the first tick.
+		duration = effect.duration,
 		stat = effect.stat,
 		amount = effect.amount,
 		multiplier = effect.multiplier,
@@ -322,11 +344,25 @@ function EffectSystem:advance(dt)
 			-- The tick is resolved BEFORE the duration is drained. Draining first loses the final
 			-- bite whenever it coincides with the expiry: a 6-damage-per-second effect lasting two
 			-- seconds owes two ticks, and would have dealt one.
-			if instance.kind == "dot" then
+			if instance.kind == "dot" and isAlive(instance.target) then
 				instance.timeToTick = instance.timeToTick - dt
 				-- A while, not an if: a long tick must not swallow a tick of damage. Losing one on a
 				-- lag spike is the phantom-timer bug with hit points instead of seconds.
-				while instance.timeToTick <= 0 and instance.remaining > 0 do
+				--
+				-- But the catch-up window is BOUNDED by what the effect has left. Without that, one
+				-- long dt drained a whole duration at once: a 2s/1s effect asked to advance 5 seconds
+				-- dealt five ticks in a single frame, while the comment above promised two. The cap
+				-- is computed from `remaining` BEFORE the drain below, which is the window that
+				-- actually exists. The interval is floored away from zero so a bad definition cannot
+				-- divide by it.
+				local interval = math.max(instance.interval or 1, 0.001)
+				-- The cap is the total the DURATION allows, not the ticks that fit in the window.
+				-- A window cap of floor(remaining/interval) is a tick too tight: with 0.99s left on
+				-- a 1s interval it is 0, which blocks a tick that fell due legitimately one frame
+				-- before the expiry. Counting from the start cannot drift, because the schedule is
+				-- fixed and the count is not.
+				local maxTicks = math.floor((instance.duration or 0) / interval)
+				while instance.timeToTick <= 0 and (instance.ticksDealt or 0) < maxTicks do
 					table.insert(events, {
 						kind = "damage",
 						target = instance.target,
@@ -334,7 +370,8 @@ function EffectSystem:advance(dt)
 						dot = true,
 						abilityId = instance.abilityId,
 					})
-					instance.timeToTick = instance.timeToTick + (instance.interval or 1)
+					instance.timeToTick = instance.timeToTick + interval
+					instance.ticksDealt = (instance.ticksDealt or 0) + 1
 				end
 			end
 
@@ -415,6 +452,8 @@ return EffectSystem
 *The only file in this kit that cannot be tested without an engine, which is why it is the only one
 with no logic in it — every rule it could have imagined already lives in a module with a suite.*
 
+`git hash-object src/server/EffectAdapter.luau` -> `b555bbccf124`
+
 ```lua
 --[[
 	EffectAdapter.luau — the thin layer that turns events into engine calls.
@@ -438,9 +477,17 @@ function EffectAdapter.new(config)
 	assert(type(config) == "table", "EffectAdapter.new needs the config")
 	local self = setmetatable({}, EffectAdapter)
 	self.config = config
-	-- [character] = WalkSpeed before the first speed effect, so the last expiry can restore it.
-	-- Kept here and not in the EffectSystem because it is engine state, not a rule.
-	self.baseSpeeds = {}
+	-- [character] = { base = WalkSpeed before the first effect, multipliers = { running ones } }
+	--
+	-- A LIST, and this is the third attempt at it. A single flag lost the base on the first expiry.
+	-- A counter still restored the base on the first expiry while a second effect was still running,
+	-- because a counter says how many are left but not what they ask for. With the list, the speed
+	-- is recomputed from what is actually running: two 2x effects are 4x, and when one expires the
+	-- other's multiplier is still in the list and the character keeps its effect.
+	--
+	-- A Studio check caught both of the earlier versions; the pure suite could not, because this is
+	-- engine state that lives in the seam between the modules.
+	self.speedEffects = {}
 	return self
 end
 
@@ -502,13 +549,60 @@ function EffectAdapter.directionOf(character)
 	return flat.Unit
 end
 
-function EffectAdapter:applySpeedEffect(character, humanoid, multiplier)
-	-- The first speed effect on this character remembers what it was, so restoring is possible
-	-- without the definition having to carry the original.
-	if self.baseSpeeds[character] == nil then
-		self.baseSpeeds[character] = humanoid.WalkSpeed
+-- Recomputes WalkSpeed from the base and everything currently running. Called after any change,
+-- so there is exactly one place that writes this number and no arithmetic to keep in sync.
+function EffectAdapter:recomputeSpeed(character, humanoid)
+	local entry = self.speedEffects[character]
+	if entry == nil then
+		return
 	end
-	humanoid.WalkSpeed = self.baseSpeeds[character] * (multiplier or 1)
+	if #entry.multipliers == 0 then
+		-- Nothing running: back to what the character had, and forget the entry.
+		humanoid.WalkSpeed = entry.base
+		self.speedEffects[character] = nil
+		return
+	end
+
+	-- The product of what is running. Two 2x effects are 4x; a 2x and a 0.5x cancel out. A game
+	-- that wants a different rule (the strongest wins, the last wins) composes before this layer,
+	-- which is why the rule is written down here rather than implied.
+	local combined = 1
+	for _, multiplier in ipairs(entry.multipliers) do
+		combined *= multiplier
+	end
+	humanoid.WalkSpeed = entry.base * combined
+end
+
+function EffectAdapter:applySpeedEffect(character, humanoid, multiplier)
+	local entry = self.speedEffects[character]
+	if entry == nil then
+		-- The first effect remembers the speed the character had, so restoring needs nothing from
+		-- the definition and survives any number of effects.
+		entry = { base = humanoid.WalkSpeed, multipliers = {} }
+		self.speedEffects[character] = entry
+	end
+	table.insert(entry.multipliers, multiplier or 1)
+	self:recomputeSpeed(character, humanoid)
+end
+
+function EffectAdapter:removeSpeedEffect(character, humanoid, multiplier)
+	local entry = self.speedEffects[character]
+	if entry == nil then
+		return false
+	end
+
+	-- One occurrence of the multiplier the ending event carried. If it is not found, the last one
+	-- goes: an effect that ended still has to leave the list, or the character stays modified.
+	local index = table.find(entry.multipliers, multiplier)
+	if index == nil then
+		index = #entry.multipliers
+	end
+	if index >= 1 then
+		table.remove(entry.multipliers, index)
+	end
+
+	self:recomputeSpeed(character, humanoid)
+	return true
 end
 
 --[[
@@ -574,10 +668,7 @@ function EffectAdapter:apply(event)
 		if event.stat ~= "speed" then
 			return false
 		end
-		local base = self.baseSpeeds[character]
-		self.baseSpeeds[character] = nil
-		humanoid.WalkSpeed = base or humanoid.WalkSpeed
-		return true
+		return self:removeSpeedEffect(character, humanoid, event.multiplier)
 	end
 
 	return false
@@ -600,6 +691,8 @@ return EffectAdapter
 ### `tests/EffectSystemSpec.luau`
 
 *23 cases. The ones worth reading: the long tick that must not swallow ticks, and the three stacking policies.*
+
+`git hash-object tests/EffectSystemSpec.luau` -> `1b303df9c83a`
 
 ```lua
 --[[
@@ -900,6 +993,76 @@ T("getActiveFor reports what a client would need, and only that", function()
 	assert(info.target == nil, "and not the target object itself")
 end)
 
+T("a dt longer than the whole duration cannot deal more ticks than the duration allows", function()
+	-- The case the suite never crossed: every DoT case ran with dt smaller than remaining, which is
+	-- exactly the gap. A 2s/1s effect owes two ticks, and a 5-second frame must not mint five.
+	local system = EffectSystem.new(Config)
+	apply(system, { dot(6, 2, 1) }, "POISON", dummy())
+	local events = system:advance(5)
+	local ticks = 0
+	for _, event in ipairs(events) do
+		if event.kind == "damage" then
+			ticks += 1
+		end
+	end
+	assert(ticks == 2, "a 2s effect with a 1s interval owes 2 ticks, dealt " .. ticks)
+end)
+
+T("a huge dt on a long DoT still stops at the duration", function()
+	local system = EffectSystem.new(Config)
+	apply(system, { dot(6, 4, 1) }, "POISON", dummy())
+	local events = system:advance(1000)
+	local ticks = 0
+	for _, event in ipairs(events) do
+		if event.kind == "damage" then
+			ticks += 1
+		end
+	end
+	assert(ticks == 4, "4 seconds at 1s interval is 4 ticks, dealt " .. ticks)
+end)
+
+T("the normal catch-up still works when dt is shorter than the duration", function()
+	-- The cap must not break the case it was added alongside: 3.5s of a 4s effect is still 3 ticks.
+	local system = EffectSystem.new(Config)
+	apply(system, { dot(6, 4, 1) }, "POISON", dummy())
+	local events = system:advance(3.5)
+	local ticks = 0
+	for _, event in ipairs(events) do
+		if event.kind == "damage" then
+			ticks += 1
+		end
+	end
+	assert(ticks == 3, "3.5s at a 1s interval is 3 ticks, dealt " .. ticks)
+end)
+
+T("refreshing a DoT emits NOTHING, and extends the duration silently", function()
+	-- It used to emit a damage event with amount = nil, which the adapter turns into
+	-- TakeDamage(nil). The Studio check missed it because it never refreshed a DoT.
+	local system = EffectSystem.new(Config)
+	apply(system, { dot(6, 4, 1) }, "POISON", dummy())
+	system:advance(0.5)
+	local events = apply(system, { dot(6, 4, 1) }, "POISON", dummy())
+	assert(#events == 0, "a refresh has nothing to report, got " .. #events)
+
+	local active = system:getActiveFor("DUMMY")
+	assert(#active == 1, "and must not leave two instances")
+	assert(active[1].remaining > 3.9, "with the duration back at full")
+end)
+
+T("a dead target stops receiving ticks", function()
+	-- The registration guard stopped a corpse being poisoned. This is the other half: a target that
+	-- dies with effects running must stop producing damage for them.
+	local system = EffectSystem.new(Config)
+	local victim = dummy()
+	apply(system, { dot(6, 4, 1) }, "POISON", victim)
+	system:advance(0.5)
+	victim.alive = false
+	local events = system:advance(1.5)
+	for _, event in ipairs(events) do
+		assert(event.kind ~= "damage", "a dead target must not be dealt damage")
+	end
+end)
+
 return T.report()
 ```
 
@@ -979,7 +1142,7 @@ it. Engine state, kept in the engine layer, which is why it is not in the Effect
 
 ## The numbers
 
-- Tests: **169** across 5 suites — AbilityDefinitionSpec 40 · AbilitySpec 34 · AbilityManagerSpec 35 · ResourceManagerSpec 30 · EffectSystemSpec 28
+- Tests: **169** across 5 suites — AbilityDefinitionSpec 42 · AbilitySpec 34 · AbilityManagerSpec 35 · ResourceManagerSpec 30 · EffectSystemSpec 28
 - Lines: **2157 source + 2057 tests** = 4214 (the adapter is 231 of the source)
 - Commits: **22**
 - selene: 0 errors, 0 warnings · stylua: clean
