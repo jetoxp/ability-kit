@@ -63,14 +63,13 @@ at the end of the shot, not in the air behind a wall.**
 
 **Two rules about the caster**, both pure and therefore both tested here:
 
-- **excluding the caster is the adapter's job, entirely.** The ray starts at the caster's root, and
-  without `RaycastParams.FilterDescendantsInstances = { casterCharacter }` the first thing a Fireball
-  hits is the arm firing it. **The resolver is not told who the caster is** and makes no exception for
-  it, because an exception invented here would be describing a rule that lives in the other layer —
-  the first draft of this section claimed "nothing is struck at zero distance", which is simply not
-  true of a ray that starts inside a body;
-- **which means the caster can be caught by the splash**, and that is geometry rather than a targeting
-  decision: a blast at the caster's feet reaching the caster is the sphere doing its job.
+- **excluding the caster is the adapter's job AND the resolver's.** The ray starts at the caster's
+  root, and without `RaycastParams.FilterDescendantsInstances = { casterCharacter }` the first thing a
+  Fireball hits is the arm firing it — that is the adapter's half, and it is now the first defence
+  rather than the only one. **The resolver is told who the caster is and excludes it from the direct
+  target**, which is the half that has a suite;
+- **the caster can be caught by the splash**, and that is geometry rather than a targeting decision: a
+  blast at the caster's feet reaching the caster is the sphere doing its job.
 
 **Selection discards candidates that are not alive**, and that rule IS here rather than in the
 adapter, because it is pure and testable: **a corpse is not a target, and a shot whose only reachable
@@ -90,19 +89,41 @@ candidate and selects it if it is the best one — which happens exactly when th
 filter. That is why the adapter's filter is not an optimisation: it is the rule's only enforcement
 point.
 
-**The spec case that pins this side of the rule, and the only one that can exist.** It asserts the
-*absence* of a behaviour, which is all the resolver's side can be:
+**The spec case.** Five assertions on one rule, and no longer a test of an absence:
 
 ```lua
-T("the resolver makes no exception for any candidate, including the caster")
--- candidates = { one sitting on the ray's origin, one further along }
--- radius == 0 -> the one along the ray, whoever is standing on the origin
--- and alone, the one on the origin IS selected: no hidden filter lives here
+T("the caster is never a direct target, and can be caught by the splash")
+-- radius == 0, only the caster   -> empty: the case that was impossible under the old contract
+-- radius == 0, caster and another -> the other, even though the caster is nearer
+-- radius > 0, caster inside       -> the caster appears: geometry, not a targeting decision
+-- radius > 0, caster outside      -> it does not
+-- no caster passed                -> nothing is excluded, because the rule needs a caster to apply
 ```
 
-It is a test of "nothing odd happens", and it is written down as such rather than left as a feeling.
-**If somebody ever wants defence in depth — the resolver excluding the caster too — that is the moment
-to add a `caster` parameter to the signature**, and this case is the one that will fail and say why.
+The filter is not hidden any more. It is explicit, and it has a name.
+
+### D4, corrected by the engine
+
+The first version of D4 argued that the resolver should not be told who the caster was — that
+excluding it was the adapter's job through the raycast filter. **What the engine refuted is not the
+sentence but the Consequence that held it up**, which read:
+
+> *"the resolver receives the caster as an ordinary candidate and selects it if it is the best one —
+> which happens exactly when the adapter failed to filter."*
+
+**That was false even with the filter working perfectly.** On a miss, detection and selection diverge:
+the ray hits nothing, `impactPoint` falls back to the end of the range, and the candidate list is
+**not** empty — the caster is in it, in front, within range, and now the only eligible one. A Fireball
+that hit nothing dealt its own caster 44 damage. **The adapter's filter only guarded the ray path; the
+candidate path was left unguarded**, and that sentence was the argument for leaving it that way.
+
+It is Option B now: `caster` is in the signature, excluded from the direct target and allowed in the
+sphere. The filter stays — as the first defence, not the only one — and the rule lives here, where it
+has a suite.
+
+And a second correction, in the same shape: **the old spec case was a test of an absence**, asserting
+that "no hidden filter lives here". It was true, and it was the wrong thing to be true about. Five
+assertions replaced it, and the filter now has a name.
 
 ### D5. Which effects follow the resolved target
 
@@ -183,11 +204,13 @@ The injection becomes the third: `AbilityDefinition.init(Config, catalog, Effect
 "without EffectSystem injected, stack goes unchecked": a validator that cannot see the vocabulary
 cannot check it, and a check that silently does not run is worse than no check.
 
-### D8. `range` is validated now, because it finally does something
+### D8. `range` gets a ceiling, because it finally does something
 
-Debt from phase 1: `range = -50` and `range = "far"` both pass the validator today. Until this phase
-`range` was decorative — it appeared in the definitions and nothing read it. Now it decides how far a
-shot reaches, so it becomes load-bearing and the validator owes it a rule: **a number ≥ 0 when
+**Corrected premise.** An earlier draft of this section claimed that `range = -50` and
+`range = "far"` pass the validator today. **That was false and the spec already falsified it** — there
+is a case named "range is validated, and zero stays legal" that has been green since before this
+phase. What `range` lacked was not validation but a **ceiling**: it accepted any non-negative number,
+and now that it decides how far a shot reaches it is load-bearing and owes one. **a number ≥ 0 when
 present, with a ceiling of `maxRange = 500` in `EFFECT_LIMITS` alongside the others** — a concrete
 number, because a placeholder is a debt rather than a rule.
 
@@ -309,34 +332,55 @@ than one I was given.
 
 ## How this phase closes
 
-Not with a suite. With **an observed run**, as phase 5 was:
+Not with a suite. With **an observed run**, and the criterion is this list and nothing else:
 
-- Fireball damaging **another character at distance** — not its caster;
-- a **miss** spending mana with no effect and **no line in the Output**;
-- a **targeting refusal** visible in the Output.
+1. **Fireball damages another character at distance, with the caster's own health unchanged.** The
+   second half is the one that proves the fix rather than the symptom.
+2. **A miss spends mana, produces zero events, and writes zero lines to the Output.**
+3. **A miss leaves the caster at full health.** This is the case the engine found: the same scenario
+   that used to deal 44 damage to the shooter.
 
-**The harness for the first one, because a solo playtest cannot observe it.** "Fireball damages
-another character" needs a second character, and the kit has no second player. The procedure is the
-one phase 4b used for its speed checks:
+**And one criterion removed, because it was not a pending case — it was a sentence with no path.**
+Earlier drafts listed "a targeting refusal visible in the Output". There is no targeting refusal in
+this design: a miss is not a refusal and logs nothing (D6), the resolver does not refuse, and the only
+refusals that log are the ones phase 5 built. **A criterion with no executable path is a badly written
+sentence rather than an unfinished task**, and leaving it in the list would have meant either inventing
+a refusal to satisfy it or quietly reporting it as covered.
+
+**The harness, because a solo playtest cannot observe any of the three.** The procedure is the one
+phase 4b used for its speed checks:
 
 ```
 1. build a disposable Model in Workspace with a Humanoid and a HumanoidRootPart, anchored,
-   positioned in front of the caster and inside the ability's range;
-2. let **the adapter's `describe()` — the one the bootstrap already calls** — see it: no change to
-   the kit, it is a Character with a Humanoid, which is exactly what the adapter accepts;
-3. activate Fireball and read the dummy's Humanoid.Health before and after;
-4. assert the CASTER's health is unchanged, which is the half that proves the fix rather than the
-   symptom.
+   positioned in front of the caster at the SAME HEIGHT as the ray, inside the ability's range;
+2. let the adapter's describe() - the one the bootstrap already calls - see it: no change to the kit,
+   it is a Character with a Humanoid, which is exactly what the adapter accepts;
+3. activate and read the dummy's Health before and after, AND the caster's, which is the half that
+   proves the fix rather than the symptom;
+4. destroy the dummy and fire again: the mana must be spent, nothing must be damaged, the caster must
+   stay at full, and the Output must stay empty.
 ```
 
-Written as procedure rather than as an aspiration: without the dummy the closing criterion is not
-executable, and a criterion that cannot be executed is not a criterion.
+## Two lessons the engine charged for
 
-A phase that ends with a green suite and a silent engine is phase 4b again.
+Both are about the seam, and neither was visible from a green suite with five rounds of review behind
+it.
 
-The paragraph this phase opens with is worth keeping, because it is the answer to what phase 5
-taught: *"the alternative — inventing the rule at the moment it is needed, inside whatever function
-needs it — is how a kit ends up with two half-rules that disagree."*
+**A promise about the seam that nobody executes is indistinguishable from a promise nobody wrote.**
+The kit has said "the adapter converts" since phase 4b — `describe` returns the unit the pure modules
+read, in plain `{ x, y, z }`. No adapter converted. `describe` handed over a `Vector3`, the resolver
+checks `type(value.x)`, a `Vector3` has no lowercase `.x`, and every candidate and every origin was
+rejected: the shot resolved to nobody, in silence. **The suite could not see it because the suite
+speaks plain tables by construction** — it is written against the contract, so it can never catch the
+boundary failing to honour it.
+
+**A Heartbeat connection that errors is disconnected, and a disconnected Heartbeat is a game that
+spends mana and never fires again.** A plain table where `castRay` wanted a `Vector3` threw inside the
+callback, Roblox dropped the connection, and the intent handler — a different connection — kept
+charging the player. Three playtests reported "the shot fires and nothing happens"; the cause was a
+tick that had stopped existing. **The tick is shared infrastructure: one player must not be able to
+switch off the clock.** The per-session body is wrapped now, and the error is logged loudly rather
+than swallowed.
 
 ## Process carried into this phase
 
