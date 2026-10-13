@@ -233,7 +233,18 @@ intentRemote.OnServerEvent:Connect(function(player, payload)
 
 	-- The order. `manager:activate` checks the cost against `owner.resources`, which IS the
 	-- ResourceManager's live pool table, so this line and the spend below cannot disagree.
-	if not session.manager:activate(intent.slot, owner) then
+	local activated, refusal = session.manager:activate(intent.slot, owner)
+	if not activated then
+		-- The third silent return, and the one that hid the longest: the session existed, the slot
+		-- was filled, and the refusal had a reason that nobody printed.
+		print(
+			string.format(
+				"[ability-kit] %s asked for slot %d and was refused: %s",
+				player.Name,
+				intent.slot,
+				tostring(refusal)
+			)
+		)
 		return
 	end
 
