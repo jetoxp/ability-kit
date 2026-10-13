@@ -31,6 +31,7 @@ local EffectSystem = require(kit.EffectSystem)
 local AbilityDefinition = require(kit.AbilityDefinition)
 local Net = require(kit.Net)
 local DefaultLoadout = require(kit.DefaultLoadout)
+local TargetResolver = require(kit.TargetResolver)
 
 local EffectAdapter =
 	require(ServerScriptService:WaitForChild("AbilityServer"):WaitForChild("EffectAdapter"))
@@ -39,7 +40,7 @@ local EffectAdapter =
 -- half-running with an ability nobody can cast. This is also where the validator gets the
 -- EffectSystem it checks `stack` policies against.
 local Catalog = require(kit.abilities)
-AbilityDefinition.init(Config, Catalog, EffectSystem)
+AbilityDefinition.init(Config, Catalog, EffectSystem, TargetResolver)
 Net.configure(Config)
 
 -- One folder, created by the server, so the client waits for something that always exists.
@@ -103,11 +104,13 @@ end
 
 local function buildSession(player)
 	local adapter = EffectAdapter.new(Config)
+	local targets = TargetAdapter.new(Config, adapter)
 	local session = {
 		manager = AbilityManager.new(Config, Ability, Catalog, DefaultLoadout),
 		resources = ResourceManager.new(Config),
 		effects = EffectSystem.new(Config),
 		adapter = adapter,
+		targets = targets,
 		stateClock = 0,
 	}
 	sessions[player] = session
@@ -276,19 +279,77 @@ RunService.Heartbeat:Connect(function(dt)
 
 		for _, firing in ipairs(session.manager:advance(dt)) do
 			if unit ~= nil then
-				-- KNOWN LIMITATION: target = source. Every ability is self-cast, because the intent
-				-- carries no target and nothing here resolves one. Fireball, whose definition says
-				-- "a single target" with range 60, therefore burns its caster. Target selection is
-				-- a later phase: a raycast from the caster's CFrame, or a client-supplied reference
-				-- the server validates. Giving the client the choice without validating it is the one
-				-- version of this that is not an option.
-				local events = session.effects:applyFiring(firing, {
-					source = unit,
-					target = unit,
-					direction = session.adapter.directionOf(owner.character),
-				})
-				for _, event in ipairs(events) do
-					session.adapter:apply(event)
+				local direction = session.adapter.directionOf(owner.character)
+				local definition = AbilityDefinition.get(firing.id)
+				local targeting = definition and definition.targeting or "self"
+
+				-- THE ONE BRANCH. It lives here, in the resolution step, and the loops below never
+				-- see it: they receive a list and do not know where it came from. For "self" the
+				-- resolver is not called, because there is nothing to resolve.
+				local resolved
+				if targeting == "raycast" then
+					local range = definition.range or 0
+					local radius = definition.radius or 0
+					local impactPoint, hit =
+						session.targets:castRay(owner.character, range, direction)
+					if impactPoint == nil then
+						-- A targeting refusal, not a miss: there is no character to shoot from, so
+						-- nothing was attempted. This is the only targeting line that logs.
+						print(
+							string.format(
+								"[ability-kit] %s fired '%s' with no character to aim from",
+								player.Name,
+								firing.id
+							)
+						)
+						resolved = nil
+					else
+						resolved = TargetResolver.resolve(
+							session.targets:gather(),
+							unit.position,
+							direction,
+							range,
+							radius,
+							impactPoint
+						)
+						-- An empty list here is a MISS and logs nothing: a shot that hits nothing is
+						-- a shot, and a line per shot would make the log useless. See D6.
+					end
+				else
+					resolved = { unit }
+				end
+
+				if resolved ~= nil then
+					-- Offensive effects, once per resolved target.
+					for _, target in ipairs(resolved) do
+						for _, effect in ipairs(firing.effects or {}) do
+							if TargetResolver.isOffensive(effect.kind) then
+								local events = session.effects:applyEffect(effect, firing.id, {
+									source = unit,
+									target = target,
+									direction = direction,
+								})
+								for _, event in ipairs(events or {}) do
+									session.adapter:apply(event)
+								end
+							end
+						end
+					end
+
+					-- Everything else, to the caster, ONCE -- outside the target loop, or a buff
+					-- would stack by the number of people standing in front of you.
+					for _, effect in ipairs(firing.effects or {}) do
+						if not TargetResolver.isOffensive(effect.kind) then
+							local events = session.effects:applyEffect(effect, firing.id, {
+								source = unit,
+								target = unit,
+								direction = direction,
+							})
+							for _, event in ipairs(events or {}) do
+								session.adapter:apply(event)
+							end
+						end
+					end
 				end
 			end
 		end
