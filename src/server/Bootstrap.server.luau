@@ -80,6 +80,10 @@ local function ownerProxy(session, player)
 	local character = player.Character
 	local unit = nil
 	if character ~= nil then
+		-- Described fresh on every use, which today means once per player per frame. It is six table
+		-- reads. If this ever shows up in a profile, the fix is to describe once per character and
+		-- invalidate on CharacterAdded — not to cache blindly, because `alive` and `health.current`
+		-- are exactly the two fields a stale copy would get wrong.
 		unit = session.adapter:describe(character)
 	end
 	return {
