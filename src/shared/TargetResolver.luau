@@ -123,13 +123,15 @@ function TargetResolver.resolve(candidates, origin, direction, range, radius, im
 		return chosen
 	end
 
-	-- Single target: alive, in front, within range, nearest to where the shot landed.
+	-- Single target: alive, in front, within range, nearest to where the shot landed. `along >= 0`
+	-- rather than `> 0`: no exception is made for a candidate sitting on the axis origin, because
+	-- this module has no idea that the origin is somebody's root. See the note above.
 	local best = nil
 	local bestDistance = math.huge
 	for _, unit in ipairs(candidates) do
 		if isUnit(unit) then
 			local along = dot(sub(unit.position, origin), direction)
-			if along > 0 and along <= range then
+			if along >= 0 and along <= range then
 				local near = distance(unit.position, impactPoint)
 				if near < bestDistance then
 					best = unit

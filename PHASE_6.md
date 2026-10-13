@@ -63,13 +63,19 @@ at the end of the shot, not in the air behind a wall.**
 
 **Two rules about the caster**, both pure and therefore both tested here:
 
-- **the caster is never a direct target.** The ray starts at the caster's root, so the caster sits at
-  `t = 0`, and `t = 0` is not a hit: nothing is ever struck at zero distance. The adapter's half of
-  this rule is excluding the caster from the raycast itself
-  (`RaycastParams.FilterDescendantsInstances = { casterCharacter }`), because otherwise the first hit
-  of a Fireball is the arm of the person firing it;
-- **the caster can be caught by the splash**, which is a different sentence and is meant to be. A
-  blast at the caster's feet reaching the caster is geometry, not a targeting decision.
+- **excluding the caster is the adapter's job, entirely.** The ray starts at the caster's root, and
+  without `RaycastParams.FilterDescendantsInstances = { casterCharacter }` the first thing a Fireball
+  hits is the arm firing it. **The resolver is not told who the caster is** and makes no exception for
+  it, because an exception invented here would be describing a rule that lives in the other layer —
+  the first draft of this section claimed "nothing is struck at zero distance", which is simply not
+  true of a ray that starts inside a body;
+- **which means the caster can be caught by the splash**, and that is geometry rather than a targeting
+  decision: a blast at the caster's feet reaching the caster is the sphere doing its job.
+
+**Selection discards candidates that are not alive**, and that rule IS here rather than in the
+adapter, because it is pure and testable: **a corpse is not a target, and a shot whose only reachable
+candidate is a corpse is a miss.** The adapter re-checks `Health` in engine; this is the half that has
+a suite, and it is the same class of rule as the one below.
 
 **The splash ignores walls**, and that is one line rather than a surprise: a candidate behind a wall
 relative to the impact point takes the splash anyway. The raycast did the occlusion work for the
@@ -144,13 +150,19 @@ cannot check it, and a check that silently does not run is worse than no check.
 Debt from phase 1: `range = -50` and `range = "far"` both pass the validator today. Until this phase
 `range` was decorative — it appeared in the definitions and nothing read it. Now it decides how far a
 shot reaches, so it becomes load-bearing and the validator owes it a rule: **a number ≥ 0 when
-present, with a sanity ceiling in `EFFECT_LIMITS` alongside the others.** `AbilityDefinitionSpec`
+present, with a ceiling of `maxRange = 500` in `EFFECT_LIMITS` alongside the others** — a concrete
+number, because a placeholder is a debt rather than a rule.
+
+**Consequence worth stating:** under this division the resolver receives the caster as an ordinary
+candidate and selects it if it is the best one — which happens exactly when the adapter failed to
+filter. That is why the adapter's filter is not an optimisation: it is the rule's only enforcement
+point, and a spec case pins the resolver's side of it so nobody moves the rule by accident. `AbilityDefinitionSpec`
 grows its cases with them.
 
 ## The seam, made explicit
 
 ```
-TargetResolver (pure)     receives candidates + origin + direction + range + radius -> a list
+TargetResolver (pure)     candidates + origin + direction + range + radius + impactPoint -> a list
 TargetAdapter (engine)    DETECTION: the real raycast, and Characters into units
 EffectSystem (unchanged)  receives a target that is already resolved and does not know who chose it
 ```
@@ -168,16 +180,20 @@ A firing is a single event carrying several effects, so **the Bootstrap pre-spli
 shape of the split matters:
 
 ```lua
+-- SHAPE, NOT SIGNATURE. The real call is
+--     effects:applyEffect(effect, firing.id, context)
+-- with context = { source = caster, target = target, direction = ... }.
+-- The point of the block is the nesting, and the nesting is real.
 for _, target in ipairs(resolved) do
     for _, effect in ipairs(firing.effects) do
         if TargetResolver.isOffensive(effect.kind) then
-            effects:applyEffect(firing, effect, target)
+            effects:applyEffect(effect, firing.id, { source = caster, target = target })
         end
     end
 end
 for _, effect in ipairs(firing.effects) do
     if not TargetResolver.isOffensive(effect.kind) then
-        effects:applyEffect(firing, effect, caster)   -- ONCE, not once per target
+        effects:applyEffect(effect, firing.id, { source = caster, target = caster })  -- ONCE
     end
 end
 ```
@@ -240,8 +256,8 @@ one phase 4b used for its speed checks:
 ```
 1. build a disposable Model in Workspace with a Humanoid and a HumanoidRootPart, anchored,
    positioned in front of the caster and inside the ability's range;
-2. let the bootstrap's own describe() see it — no change to the kit, it is a Character with a
-   Humanoid, which is exactly what the adapter accepts;
+2. let **the adapter's `describe()` — the one the bootstrap already calls** — see it: no change to
+   the kit, it is a Character with a Humanoid, which is exactly what the adapter accepts;
 3. activate Fireball and read the dummy's Humanoid.Health before and after;
 4. assert the CASTER's health is unchanged, which is the half that proves the fix rather than the
    symptom.

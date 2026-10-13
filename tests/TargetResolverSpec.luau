@@ -62,23 +62,28 @@ T("with several in line, the one nearest the impact point wins", function()
 	)
 end)
 
-T("the caster is never a direct target, even standing in its own shot", function()
-	-- The ray starts at the caster's root, so the caster is at t = 0 and t = 0 is not a hit:
-	-- nothing is ever struck at zero distance. This is the pure half of the rule; the adapter's
-	-- half is filtering the caster out of the raycast so the first hit is not its own arm.
-	local caster = unit(0)
-	local chosen = TargetResolver.resolve({ caster, unit(25) }, ORIGIN, FORWARD, 60, 0, at(25))
+T("a candidate at the ray's own origin is not special-cased here", function()
+	-- Pinned deliberately, in the direction that looks wrong: a lone candidate sitting exactly on the
+	-- origin IS selected, because this module has no idea the origin is somebody's root.
+	--
+	-- Excluding the caster is the ADAPTER's job, through the raycast filter — the ray starts at the
+	-- caster's root and without `FilterDescendantsInstances = { casterCharacter }` the first thing a
+	-- Fireball hits is the arm firing it. This case exists so that nobody "fixes" the resolver by
+	-- teaching it about casters, and so that the division of labour is a test rather than a comment.
+	local onOrigin = unit(0)
+	local chosen = TargetResolver.resolve({ onOrigin, unit(25) }, ORIGIN, FORWARD, 60, 0, at(25))
 	assert(#chosen == 1, "one hit")
-	assert(chosen[1].position.x == 25, "and it is not the caster")
+	assert(chosen[1].position.x == 25, "and it is the one nearest the impact")
 	assert(
-		#TargetResolver.resolve({ caster }, ORIGIN, FORWARD, 60, 0, at(0)) == 0,
-		"and alone, the caster is a miss"
+		#TargetResolver.resolve({ onOrigin }, ORIGIN, FORWARD, 60, 0, at(0)) == 1,
+		"and alone it IS selected: no exception lives here"
 	)
 end)
 
-T("the caster CAN be caught by the splash, which is a different sentence", function()
-	-- radius == 0 never targets the caster; radius > 0 can, because a blast at the caster's feet
-	-- reaching the caster is geometry rather than a targeting decision.
+T("the splash includes whoever is near the impact point, whoever they are", function()
+	-- A blast at the caster's feet reaching the caster is geometry, not a targeting decision, so the
+	-- splash has no opinion about identity — which is the same statement as the case above, from the
+	-- other side.
 	local chosen = TargetResolver.resolve({ unit(0), unit(2) }, ORIGIN, FORWARD, 60, 5, at(1))
 	assert(#chosen == 2, "both are inside the sphere, got " .. #chosen)
 end)
