@@ -75,7 +75,7 @@ distinguishing "did not run" from "ran and failed" with no line to read.
 
 *The contract, and the client-facing trust boundary as a pure function — which is why it has a suite.*
 
-`git hash-object src/shared/Net.luau` -> `32acf422fcfc`
+`git hash-object src/shared/Net.luau` -> `40c845fc0087`32acf422fcfc`
 
 ```lua
 --[[
@@ -110,7 +110,9 @@ function Net.configure(config)
 end
 
 --[[
-	Checks a client's payload and returns (ok, intentOrReason).
+	Checks a client's payload and returns (ok, value): on success `value` is the normalised intent,
+	and on failure it is the reason string that goes to the log. Two different things in one slot,
+	which is a shape worth naming rather than leaving to be inferred.
 
 	This is the whole of the client-facing trust boundary, and it is deliberately dull: an action
 	from a known list, and a slot within range. Anything else is refused, including a payload that
@@ -140,8 +142,13 @@ function Net.validateIntent(payload)
 		return false, string.format("unknown action '%s'", tostring(payload.action))
 	end
 
+	-- An integer, not merely a number. `1.5` would pass a range check and then find no ability, which
+	-- is a silent no-op where a refusal belongs: the boundary is cheaper to tighten than to explain.
 	if type(payload.slot) ~= "number" or payload.slot ~= payload.slot then
 		return false, "slot must be a number"
+	end
+	if payload.slot ~= math.floor(payload.slot) then
+		return false, string.format("slot %s is not a slot", tostring(payload.slot))
 	end
 	if payload.slot < 1 or (Net.MAX_SLOT ~= nil and payload.slot > Net.MAX_SLOT) then
 		return false, string.format("slot %s is out of range", tostring(payload.slot))
@@ -163,248 +170,116 @@ return Net
 
 ### `src/server/Bootstrap.server.luau`
 
-*The composition root. Read the header for what it refuses to do, and the intent handler for the order.*
+*The composition root. Read the header for what it refuses to do, and the intent handler for the
+order.*
 
-`git hash-object src/server/Bootstrap.server.luau` -> `8595b007725d`
+`git hash-object src/server/Bootstrap.server.luau` -> `5e31a0567f1f`
 
-```lua
---[[
-	Bootstrap.server.luau — the composition root.
+**The paste here is a diff, not the file.** A document that repeats a whole file is a document that
+will one day disagree with it — this one already did, for three rounds, describing respawn wiring
+that its own paste did not contain. A diff cannot disagree: it either applies or it does not.
 
-	The only file in this kit where the modules meet. Everything else was written so that it would
-	not have to know about anything else: the manager does not know what an effect is, the effect
-	system does not know what a player is, and the adapter does not know what a cost is. This file
-	introduces them, once per player, and then stays out of the way.
-
-	Its three jobs, and nothing else:
-
-	  1. build the per-player set and keep it in one table
-	  2. answer intents, in the order that matters: can it be paid, then activate, then pay
-	  3. run one heartbeat that advances everything and hands the resulting events to the adapter
-
-	That second order is the one that is easy to get wrong. Paying after activating means a failed
-	spend leaves an activation in flight that has to be cancelled; checking first means the only
-	possible failure is a refusal that changed nothing.
-]]
-
-local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
-local ServerScriptService = game:GetService("ServerScriptService")
-
-local kit = ReplicatedStorage:WaitForChild("AbilityKit")
-local Config = require(kit.Config)
-local Ability = require(kit.Ability)
-local AbilityManager = require(kit.AbilityManager)
-local ResourceManager = require(kit.ResourceManager)
-local EffectSystem = require(kit.EffectSystem)
-local AbilityDefinition = require(kit.AbilityDefinition)
-local Net = require(kit.Net)
-local DefaultLoadout = require(kit.DefaultLoadout)
-
-local EffectAdapter =
-	require(ServerScriptService:WaitForChild("AbilityServer"):WaitForChild("EffectAdapter"))
-
--- The catalog validates as it builds, so a broken definition stops the game here rather than
--- half-running with an ability nobody can cast. This is also where the validator gets the
--- EffectSystem it checks `stack` policies against.
-local Catalog = require(kit.abilities)
-AbilityDefinition.init(Config, Catalog, EffectSystem)
-Net.configure(Config)
-
--- One folder, created by the server, so the client waits for something that always exists.
-local netFolder = Instance.new("Folder")
-netFolder.Name = Net.FOLDER
-netFolder.Parent = ReplicatedStorage
-
-local intentRemote = Instance.new("RemoteEvent")
-intentRemote.Name = Net.INTENT
-intentRemote.Parent = netFolder
-
-local stateRemote = Instance.new("RemoteEvent")
-stateRemote.Name = Net.STATE
-stateRemote.Parent = netFolder
-
--- How often a snapshot goes down. Not every frame: a client drawing a cooldown sweep does not need
--- 60 messages a second, and the tick below does not care either way.
-local STATE_INTERVAL = 1 / 10
-
-local sessions = {} -- [player] = session
-
-print(
-	string.format(
-		"[ability-kit] bootstrap up: %d abilities in the catalog, %d equipped by default",
-		#Catalog,
-		Config.MAX_EQUIPPED
-	)
-)
-
---[[
-	The unit a session's own systems read, built fresh each time from the live character.
-
-	This is the proxy the composition order depends on: `resources` is the ResourceManager's own
-	pool table, in exactly the shape Ability:canActivate reads, so the manager's affordability check
-	and the spend that follows cannot disagree — they are looking at the same numbers.
-]]
-local function ownerProxy(session, player)
-	local character = player.Character
-	local unit = nil
-	if character ~= nil then
-		unit = session.adapter:describe(character)
-	end
-	return {
-		alive = unit ~= nil and unit.alive or false,
-		resources = session.resources:getOwnerResources(),
-		unit = unit,
-		character = character,
-	}
-end
-
-local function buildSession(player)
-	local adapter = EffectAdapter.new(Config)
-	local session = {
-		manager = AbilityManager.new(Config, Ability, Catalog, DefaultLoadout),
-		resources = ResourceManager.new(Config),
-		effects = EffectSystem.new(Config),
-		adapter = adapter,
-		stateClock = 0,
-	}
-	sessions[player] = session
-	return session
-end
-
-local function snapshot(session)
-	local managerState = session.manager:toState()
-	-- The two halves of the same table, joined where both are in scope. `resources` is the
-	-- ResourceManager's row, and the shapes were declared together in Config.
-	local state = {}
-	for _, field in ipairs(Config.MANAGER_REQUIRED_FIELDS) do
-		state[field] = managerState[field]
-	end
-	for _, field in ipairs(Config.MANAGER_OPTIONAL_FIELDS) do
-		state[field] = managerState[field]
-	end
-	state.resources = session.resources:toState()
-	return state
-end
-
-Players.PlayerAdded:Connect(function(player)
-	buildSession(player)
-end)
-
--- And the players who are already here. A script connects PlayerAdded at the point it runs, and in
--- Studio that point is reached AFTER the local player has joined — so the event never fires for them
--- and they get no session: no state, no intents, nothing. This is not a Studio quirk to work around;
--- the same thing happens to anyone already in a server when a script reloads.
-for _, player in ipairs(Players:GetPlayers()) do
-	buildSession(player)
-end
-
-Players.PlayerRemoving:Connect(function(player)
-	local session = sessions[player]
-	if session ~= nil then
-		-- Nothing to save: this kit persists no state. What there is to do is let go of it, so a
-		-- session cannot outlive the player it belongs to.
-		session.effects:clear(player)
-		sessions[player] = nil
-	end
-end)
-
-intentRemote.OnServerEvent:Connect(function(player, payload)
-	local session = sessions[player]
-	if session == nil then
-		return
-	end
-
-	local ok, intent = Net.validateIntent(payload)
-	if not ok then
-		-- The reason goes to the log and never back to the client. A refusal teaches nothing.
-		print(
-			string.format(
-				"[ability-kit] refused an intent from %s: %s",
-				player.Name,
-				tostring(intent)
-			)
-		)
-		return
-	end
-
-	local ability = session.manager:getAbility(intent.slot)
-	if ability == nil then
-		return
-	end
-
-	local owner = ownerProxy(session, player)
-
-	-- The order. `manager:activate` checks the cost against `owner.resources`, which IS the
-	-- ResourceManager's live pool table, so this line and the spend below cannot disagree.
-	if not session.manager:activate(intent.slot, owner) then
-		return
-	end
-
-	-- Only now does anything move. The check above cannot have passed and this fail, because both
-	-- read the same table in the same frame.
-	session.resources:spend(ability:getCost())
-end)
-
---[[
-	The single heartbeat.
-
-	One connection for the whole server, not one per player's loops: every session is advanced from
-	here, so there is exactly one place where time passes. Effects are handed to the adapter, which
-	translates and does not decide.
-]]
-RunService.Heartbeat:Connect(function(dt)
-	for player, session in pairs(sessions) do
-		local owner = ownerProxy(session, player)
-		local unit = owner.unit
-
-		session.resources:advance(dt)
-
-		for _, firing in ipairs(session.manager:advance(dt)) do
-			if unit ~= nil then
-				local events = session.effects:applyFiring(firing, {
-					source = unit,
-					target = unit,
-					direction = session.adapter:directionOf(owner.character),
-				})
-				for _, event in ipairs(events) do
-					session.adapter:apply(event)
-				end
-			end
-		end
-
-		-- The timed effects tick whether or not anything fired, and a DoT that cannot reach its
-		-- target still expires rather than living forever.
-		if unit ~= nil then
-			for _, event in ipairs(session.effects:advance(dt)) do
-				session.adapter:apply(event)
-			end
-		end
-
-		session.stateClock = session.stateClock + dt
-		if session.stateClock >= STATE_INTERVAL then
-			session.stateClock = 0
-			stateRemote:FireClient(player, snapshot(session))
-		end
-	end
-end)
-
--- A server that is shutting down should not leave sessions behind either. There is no state to
--- persist yet, so this is where saving would go, and having the hook in place is the difference
--- between adding it later and forgetting it.
-game:BindToClose(function()
-	for player in pairs(sessions) do
-		sessions[player] = nil
-	end
-end)
+```diff
+diff --git a/src/server/Bootstrap.server.luau b/src/server/Bootstrap.server.luau
+index 4883a54..5e31a05 100644
+--- a/src/server/Bootstrap.server.luau
++++ b/src/server/Bootstrap.server.luau
+@@ -94,31 +94,6 @@ local function ownerProxy(session, player)
+ 	}
+ end
+ 
+---[[
+-	Death and respawn.
+-
+-	Three functions were written and tested for this and none of them was ever called: reset() clears
+-	cooldowns and casts, refill() takes the pools back to full, clear() drops the effects. Without
+-	this connection a player who dies mid-cast keeps the cooldown, the spent mana and the poison on
+-	their corpse, and comes back with all three.
+-]]
+-local function onCharacterAdded(player, character)
+-	local session = sessions[player]
+-	if session == nil then
+-		return
+-	end
+-
+-	local previous = session.lastCharacter
+-	if previous ~= nil and previous ~= character then
+-		session.effects:clear(previous)
+-	end
+-	session.lastCharacter = character
+-
+-	session.manager:reset()
+-	session.resources:refill()
+-	session.effects:clear(character)
+-end
+-
+ local function buildSession(player)
+ 	local adapter = EffectAdapter.new(Config)
+ 	local session = {
+@@ -127,17 +102,8 @@ local function buildSession(player)
+ 		effects = EffectSystem.new(Config),
+ 		adapter = adapter,
+ 		stateClock = 0,
+-		lastCharacter = nil,
+ 	}
+ 	sessions[player] = session
+-
+-	player.CharacterAdded:Connect(function(character)
+-		onCharacterAdded(player, character)
+-	end)
+-	if player.Character ~= nil then
+-		onCharacterAdded(player, player.Character)
+-	end
+-
+ 	return session
+ end
+ 
+@@ -156,8 +122,38 @@ local function snapshot(session)
+ 	return state
+ end
+ 
++--[[
++	Death and respawn.
++
++	Three functions were written and tested for this and none of them was ever called: reset() clears
++	cooldowns and casts, refill() takes the pools back to full, clear() drops the effects. Without
++	this wiring a player who dies mid-cast keeps the cooldown, the spent mana and the poison on their
++	corpse, and comes back with all three.
++
++	Two events rather than one, because they are two different moments with two different subjects:
++	`CharacterAdded` is about the player coming back, and `CharacterRemoving` is about the character
++	going away. `CharacterRemoving` also fires while the Instance is still valid, which is what makes
++	it the right place to drop the effects — the id they are keyed by is that Instance.
++]]
+ Players.PlayerAdded:Connect(function(player)
+ 	buildSession(player)
++
++	player.CharacterAdded:Connect(function()
++		local session = sessions[player]
++		if session ~= nil then
++			session.manager:reset()
++			session.resources:refill()
++		end
++	end)
++
++	player.CharacterRemoving:Connect(function(character)
++		local session = sessions[player]
++		if session ~= nil then
++			-- The id a target is keyed by is the character Instance, not the Player. Clearing by
++			-- player would remove nothing and leave the effects running on a corpse.
++			session.effects:clear(character)
++		end
++	end)
+ end)
+ 
+ -- And the players who are already here. A script connects PlayerAdded at the point it runs, and in
 ```
 
 ### `src/client/AbilityClient.client.luau`
 
 *The client's whole job: a keypress becomes an intent. No local cooldown check, no cost, no target.*
 
-`git hash-object src/client/AbilityClient.client.luau` -> `8802ae2e4d45`
+`git hash-object src/client/AbilityClient.client.luau` -> `8802ae2e4d45` -> `8802ae2e4d45`
 
 ```lua
 --[[
@@ -466,7 +341,7 @@ end)
 
 *The seam phase 7 will read from.*
 
-`git hash-object src/client/ClientState.luau` -> `7236a8d567af`
+`git hash-object src/client/ClientState.luau` -> `7236a8d567af` -> `7236a8d567af`
 
 ```lua
 --[[
@@ -498,7 +373,7 @@ return ClientState
 *The single source of truth for the replicated state, and where the `MANAGER_FIELDS` split is
 explained. Read the two field lists and the comment above them.*
 
-`git hash-object src/shared/Config.luau` -> `d21115a9ce04`
+`git hash-object src/shared/Config.luau` -> `d21115a9ce04`d21115a9ce04`
 
 ```lua
 --[[
@@ -617,6 +492,24 @@ stylua --check src/ tests/   # prints nothing
 `NetSpec` covers the client-facing boundary — every case is a payload this version refuses.
 The Bootstrap has no suite and cannot have one: it is the file that needs a server. What it
 has is a playtest, and the check that matters is that a snapshot reaches the client.
+
+## What this round changed
+
+The review found that the document described respawn wiring its own paste did not contain — the
+Bootstrap block was three rounds stale, and its `git hash-object` proved it. Two things came out of
+it:
+
+1. **The wiring is now in the file, in the reviewer's shape** — `CharacterAdded` for coming back
+   (`reset` + `refill`), `CharacterRemoving` for going away (`clear` by the character Instance).
+   Two events rather than one armed with a `lastCharacter`, because they are two different moments
+   with two different subjects.
+2. **Pastes are diffs from here on.** That is the promise phase 4b earned and this round paid: the
+   Bootstrap above is a diff against the previous commit. A diff either applies or it does not; a
+   whole file can be quietly wrong in the middle.
+
+One more clarification this round: `Ability:interrupt()`'s comment said a cancelled cast "costs
+nothing", which was true of the ability and read as if it were true of the player's mana. It now says
+which nothing it means, and points at the decision below.
 
 ## What is left in this phase
 
