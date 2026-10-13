@@ -305,4 +305,21 @@ T("buildCatalog refuses to build at all when two ids collide", function()
 	assert(#errors > 0, "and say why")
 end)
 
+T("buildCatalog accepts the same input shapes validateCatalog does", function()
+	-- The contract has to match. With ipairs a dict validated clean and then built an EMPTY
+	-- catalog, with no error anywhere: validation said yes, the build returned nothing.
+	local a, b = valid(), valid()
+	a.id, b.id = "ALPHA", "BETA"
+	AbilityDefinition.init(Config, {})
+
+	local fromArray, arrayErrors = AbilityDefinition.buildCatalog({ a, b })
+	assert(#arrayErrors == 0, "an array must keep working")
+	assert(fromArray.ALPHA == a and fromArray.BETA == b, "and be keyed by id")
+
+	local fromDict, dictErrors = AbilityDefinition.buildCatalog({ FIRST = a, SECOND = b })
+	assert(#dictErrors == 0, "a dict is legal input, same as for validateCatalog")
+	assert(next(fromDict) ~= nil, "a dict must not silently produce an empty catalog")
+	assert(fromDict.ALPHA == a and fromDict.BETA == b, "and must be keyed by definition.id")
+end)
+
 return T.report()

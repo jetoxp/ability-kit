@@ -342,8 +342,15 @@ function AbilityDefinition.buildCatalog(definitions)
 		return nil, errors, warnings
 	end
 
+	-- pairs, not ipairs, to match what validateCatalog accepts. With ipairs a dict validated
+	-- clean and then produced an EMPTY catalog without a single error: the validation said yes
+	-- and the build returned nothing, which is the worst failure shape there is. The two
+	-- functions must accept the same input or one of them lies.
+	--
+	-- (Contrast with the effects loop inside validate(), which uses ipairs on purpose: the order
+	-- of a definition's effects is meaningful. Here it is not — the result is a lookup by id.)
 	local catalog = {}
-	for _, definition in ipairs(definitions) do
+	for _, definition in pairs(definitions) do
 		catalog[definition.id] = definition
 	end
 	return catalog, errors, warnings
