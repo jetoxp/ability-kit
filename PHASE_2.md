@@ -48,22 +48,24 @@ which is the mistake this kit has already paid for once.
 
 ```
 src/shared/
-  Ability.luau          NEW — the state machine
+  Ability.luau          the state machine
   AbilityDefinition.luau
   Config.luau
   DefaultLoadout.luau
   abilities/            (Fireball, Poison, Dash, Heal, init)
 tests/
-  AbilitySpec.luau      NEW — 28 cases
+  AbilitySpec.luau      33 cases
   AbilityDefinitionSpec.luau
   TestKit.luau  run.luau
 ```
 
 ## The code
 
+*The state after review — this is what is in Studio and in git today.*
+
 ### `src/shared/Ability.luau`
 
-*The whole phase. Read the header comment first: the states and what this module refuses to know.*
+*The whole phase. Read the header comment first: the states, and what this module refuses to know.*
 
 ```lua
 --[[
@@ -125,6 +127,7 @@ function Ability:reset()
 	self.state = Ability.STATES.idle
 	self.cooldownRemaining = 0
 	self.castRemaining = 0
+	self.castOvershoot = 0
 	self.effectsEmitted = false
 	return self
 end
@@ -192,11 +195,11 @@ function Ability:canActivate(owner)
 			return false, "notEnoughResources"
 		end
 		for pool, amount in pairs(cost) do
-			local actual = resources[pool]
+			local available = resources[pool]
 			if
-				type(actual) ~= "table"
-				or type(actual.current) ~= "number"
-				or actual.current < amount
+				type(available) ~= "table"
+				or type(available.current) ~= "number"
+				or available.current < amount
 			then
 				return false, "notEnoughResources"
 			end
@@ -262,8 +265,14 @@ function Ability:advance(dt)
 	end
 
 	if self.state == Ability.STATES.casting then
-		self.castRemaining = math.max(0, self.castRemaining - dt)
+		self.castRemaining = self.castRemaining - dt
 		if self.castRemaining <= 0 then
+			-- Keep the overshoot instead of clamping it away. On a normal tick it is microseconds;
+			-- on a lag spike it is seconds, and dropping them starts the cooldown at full value
+			-- while real time has already passed. The result is a cooldown that is longer than it
+			-- says, only sometimes, which is the worst way for a number to be wrong.
+			self.castOvershoot = -self.castRemaining
+			self.castRemaining = 0
 			self.state = Ability.STATES.active
 		end
 	end
@@ -277,7 +286,10 @@ function Ability:advance(dt)
 	if self.state == Ability.STATES.active and not self.effectsEmitted then
 		self.effectsEmitted = true
 		self.state = Ability.STATES.cooldown
-		self.cooldownRemaining = self.definition.cooldown or 0
+		-- The leftover of the tick that finished the cast is credited here, so a hitch cannot
+		-- silently lengthen the wait.
+		self.cooldownRemaining = math.max(0, (self.definition.cooldown or 0) - self.castOvershoot)
+		self.castOvershoot = 0
 		if self.cooldownRemaining <= 0 then
 			self.state = Ability.STATES.idle
 		end
@@ -305,7 +317,10 @@ function Ability:interrupt(reason)
 
 	-- A cancelled cast costs nothing and goes on no cooldown. Charging for a cast that never
 	-- happened is the kind of thing players notice and never forgive.
+	-- The reason comes from inside the kit, but a caller can pass anything. Falling back keeps a
+	-- refusal explainable: a nil here reaches the player as an empty message and reads as a bug.
 	local message = self.config.MESSAGES[reason or "castInterrupted"]
+		or self.config.MESSAGES.castInterrupted
 	return true, message
 end
 
@@ -330,7 +345,7 @@ return Ability
 
 ### `tests/AbilitySpec.luau`
 
-*28 cases: every transition, every guard, the once-only firing, and that two instances do not share state.*
+*33 cases: every transition, every guard, the once-only firing, the dt credit, and the boundary.*
 
 ```lua
 --[[
@@ -403,14 +418,14 @@ T("the effects fire exactly once, however many ticks run", function()
 	-- The invariant. A DoT applied twice is damage nobody can explain, so the firing is one-way.
 	local a = newAbility()
 	a:startActivation()
-	local veces = 0
+	local firedCount = 0
 	for _ = 1, 20 do
 		local fired = a:advance(0.1)
 		if fired then
-			veces += 1
+			firedCount += 1
 		end
 	end
-	assert(veces == 1, "fired " .. veces .. " times, must be exactly 1")
+	assert(firedCount == 1, "fired " .. firedCount .. " times, must be exactly 1")
 end)
 
 T("an instant ability's cooldown starts when it fires, not before", function()
@@ -494,7 +509,7 @@ T("canActivate refuses while already casting, and says which", function()
 	local a = newAbility(slow())
 	a:startActivation()
 	local ok, reason = a:canActivate(ownerWith(100))
-	assert(not ok, "the dead cannot cast")
+	assert(not ok, "a cast in progress cannot be started again")
 	assert(reason == "alreadyCasting", "got: " .. tostring(reason))
 end)
 
@@ -577,10 +592,10 @@ T("interrupting during a cooldown leaves the cooldown alone", function()
 	local a = newAbility()
 	a:startActivation()
 	a:advance(0.05)
-	local antes = a:getCooldownRemaining()
+	local before = a:getCooldownRemaining()
 	local ok = a:interrupt()
 	assert(not ok, "there is no cast to cancel")
-	assert(a:getCooldownRemaining() == antes, "and the cooldown must survive untouched")
+	assert(a:getCooldownRemaining() == before, "and the cooldown must survive untouched")
 end)
 
 -- ===== the snapshot =====
@@ -607,8 +622,8 @@ T("getCastProgress reports 1 for an instant ability and a fraction for a cast", 
 	a:startActivation()
 	assert(a:getCastProgress() == 0, "at the start")
 	a:advance(0.5)
-	local mitad = a:getCastProgress()
-	assert(mitad > 0.4 and mitad < 0.6, "halfway through a 1s cast, got " .. mitad)
+	local halfway = a:getCastProgress()
+	assert(halfway > 0.4 and halfway < 0.6, "halfway through a 1s cast, got " .. halfway)
 end)
 
 T("reset clears a cooldown and a cast in progress", function()
@@ -625,12 +640,12 @@ T("two instances of the same definition do not share state", function()
 	-- The definition is shared by design; the state must not be. If this ever fails, someone has
 	-- put mutable state in a definition, where the validator cannot see it.
 	local def = instant()
-	local uno = Ability.new(def, Config)
-	local dos = Ability.new(def, Config)
-	uno:startActivation()
-	uno:advance(0.05)
-	assert(dos:isReady(), "the second instance must still be fresh")
-	assert(dos:getCooldownRemaining() == 0, "and off cooldown")
+	local first = Ability.new(def, Config)
+	local second = Ability.new(def, Config)
+	first:startActivation()
+	first:advance(0.05)
+	assert(second:isReady(), "the second instance must still be fresh")
+	assert(second:getCooldownRemaining() == 0, "and off cooldown")
 	assert(def.cooldown == 3, "and the definition must not have been written to")
 end)
 
@@ -644,48 +659,118 @@ T("a nonsense dt is refused instead of corrupting the timers", function()
 	assert(a:getCooldownRemaining() == 0, "timers untouched")
 end)
 
+T("interrupt falls back to the default message for a reason the config does not know", function()
+	-- A caller can pass any string. A nil here reaches the player as an empty message and reads as
+	-- a bug in a system that is working perfectly.
+	local a = newAbility(slow())
+	a:startActivation()
+	local cancelled, message = a:interrupt("aReasonNobodyDefined")
+	assert(cancelled, "the cast must still cancel")
+	assert(
+		message == Config.MESSAGES.castInterrupted,
+		"and the player must get a sentence, not nil"
+	)
+end)
+
+T("the leftover dt from the tick that finishes a cast is credited to the cooldown", function()
+	-- 1.4s of dt against a 1.0s cast and an 8s cooldown. Losing the 0.4 puts the ability further
+	-- from ready than it is, and only ever on a tick that ran long.
+	local a = newAbility(slow())
+	a:startActivation()
+	local fired = a:advance(1.4)
+	assert(fired, "the cast completes")
+	assert(
+		math.abs(a:getCooldownRemaining() - 7.6) < 0.001,
+		"0.4s must be credited, got " .. a:getCooldownRemaining()
+	)
+end)
+
+T("a lag spike does not mint cooldown out of nothing", function()
+	-- The case that motivated the rule: a 3s hitch against a 1s cast. Without the credit the
+	-- ability waits 2 seconds longer than the definition says, and never in a reproducible way.
+	local a = newAbility(slow())
+	a:startActivation()
+	a:advance(3)
+	assert(
+		math.abs(a:getCooldownRemaining() - 6) < 0.001,
+		"2s of overshoot must be credited, got " .. a:getCooldownRemaining()
+	)
+end)
+
+T("a cast completing exactly on the boundary fires and leaves no negative timer", function()
+	-- advance(castTime) exactly, where a <= versus < hides.
+	local a = newAbility(slow())
+	a:startActivation()
+	local fired = a:advance(1)
+	assert(fired, "a 1s advance on a 1s cast must complete it, not miss by a float hair")
+	assert(a:getCastRemaining() == 0, "and leave no negative cast time")
+	assert(
+		math.abs(a:getCooldownRemaining() - 8) < 0.001,
+		"with nothing to credit, the full cooldown stands, got " .. a:getCooldownRemaining()
+	)
+end)
+
+T("startActivation twice does nothing the second time", function()
+	local a = newAbility()
+	assert(a:startActivation(), "the first call starts it")
+	assert(not a:startActivation(), "the second must be refused, or the same ability fires twice")
+	assert(a:getState() == Ability.STATES.active, "and the state must be untouched")
+end)
+
 return T.report()
 ```
 
 ## How to test it
 
-```",
-luau tests/run.luau          # 68 cases across 2 suites
+```
+luau tests/run.luau          # 73 cases across 2 suites
 selene src/ tests/           # 0 errors, 0 warnings
 stylua --check src/ tests/   # prints nothing
 ```
 
-**In Studio there is nothing to look at yet**, and that is expected: this module touches no Roblox
-API, so the Luau interpreter exercises it exactly as well as Studio would. The engine check matters
-when there is something to wire up, which is phase 3.
+**In Studio there is nothing to look at yet**, and that is expected: this module touches no
+Roblox API, so the Luau interpreter exercises it exactly as well as Studio would. The engine
+check matters when there is something to wire up, which is phase 3.
 
-## The cases that carry the phase
+## What review found in this phase
 
-The 28 are not evenly weighted. These six are the ones that would catch a rewrite going wrong:
+Six findings, none critical, and — the useful part — each one has a shape:
 
-- **the effects fire exactly once, however many ticks run** — 20 ticks, counted firings, must be 1
-- **the cast completes and fires on the same tick that ends it** — not the tick after
-- **an interrupted cast never fires** — and costs nothing, and goes on no cooldown
-- **canActivate accepts exactly enough mana** — the boundary has to pass, or the cost is off by one
-- **two instances of the same definition do not share state** — the definition is shared, the state
-  must not be
-- **interrupting during a cooldown leaves the cooldown alone** — a no-op must actually be a no-op
+| # | Finding | Shape |
+|---|---------|-------|
+| 1 | `interrupt` returned nil when the reason was not in `Config.MESSAGES` | a message that isn't there |
+| 2 | the leftover `dt` from the tick that finished a cast was dropped, so a 3s hitch lost 2s of cooldown credit | time that goes missing, only sometimes |
+| 3 | `veces`, `mitad`, `antes`, `uno`, `dos` — Spanish identifiers in a file whose own header says English | a convention that holds only if something enforces it |
+| 4 | the case "refuses while already casting" carried the message *"the dead cannot cast"* | a test that points at the wrong bug |
+| 5 | `startActivation` refuses a second call, and no case covered it | a public guard with no case |
+| 6 | no case for `advance(castTime)` exactly | where a `<=` versus `<` hides |
+
+And one more, found while fixing them — mine, and the one worth remembering:
+
+> **the rename of `actual` to `available` was applied to the declaration and not to the usages.**
+> `canActivate` read a variable that no longer existed, three selene errors, two red tests. The
+> grep had already printed the leftover lines and I read them as a false positive because "it's
+> what I just renamed". After a rename, every hit for the old name is real until proven otherwise.
+
+Finding 2 is the one with teeth. On a normal tick the loss is microseconds; on a lag spike it is
+seconds, and it makes a cooldown longer than the number it reports — a wrong value that only
+appears sometimes, which is the hardest kind to ever reproduce from a bug report.
 
 ## The numbers
 
-- Tests: **68** across 2 suites (**28** in this one), no Studio
-- Lines: **962 source + 834 tests** = 1796
+- Tests: **73** across 2 suites — -> 40 passed, 0 failed, of 40  |    -> 33 passed, 0 failed, of 33
+- Lines: **975 source + 892 tests** = 1867
+- Commits: **9**
 - selene: 0 errors, 0 warnings · stylua: clean
 
 ## What is not here yet, on purpose
 
 - **The global cooldown** and per-player state — phase 3, in the manager.
 - **Spending the resources.** `canActivate` checks, `getCost` reports, and nobody deducts yet.
-- **Anything wired to a player.** No remote, no Bootstrap, no character. Phase 3 and 5.
+- **Anything wired to a player.** No remote, no Bootstrap, no character. Phases 3 and 5.
 
 ## Still not verified
 
-Same caveat as phase 1, and it now applies to two modules: **no full game boot**. There is no
-Bootstrap, so nothing here has been exercised through the path a real player would take. What is
-verified is the logic itself, exhaustively, and the fact that it loads under the same `require`
-path the boot will use.
+Same caveat as phase 1, now covering two modules: **no full game boot**. There is no Bootstrap,
+so nothing here has been exercised through the path a real player takes. What is verified is the
+logic itself, exhaustively, and that it loads by the same `require` path the boot will use.
