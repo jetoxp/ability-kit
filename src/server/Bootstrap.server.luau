@@ -61,10 +61,17 @@ local STATE_INTERVAL = 1 / 10
 
 local sessions = {} -- [player] = session
 
+-- Counted by pairs, not with #: the catalog is keyed by id, and `#` on a dictionary returns 0 no
+-- matter how full it is. This line reported "0 abilities" on a healthy boot, which cost more time
+-- than printing nothing would have.
+local catalogSize = 0
+for _ in pairs(Catalog) do
+	catalogSize += 1
+end
 print(
 	string.format(
 		"[ability-kit] bootstrap up: %d abilities in the catalog, %d equipped by default",
-		#Catalog,
+		catalogSize,
 		Config.MAX_EQUIPPED
 	)
 )
@@ -104,6 +111,42 @@ local function buildSession(player)
 		stateClock = 0,
 	}
 	sessions[player] = session
+
+	--[[
+		Death and respawn, wired HERE and not in the PlayerAdded callback.
+
+		Three functions were written and tested for this and none of them was ever called: reset() clears
+		cooldowns and casts, refill() takes the pools back to full, clear() drops the effects. Without
+		this wiring a player who dies mid-cast keeps the cooldown, the spent mana and the poison on their
+		corpse, and comes back with all three.
+
+		It lives in buildSession because that is the one function BOTH paths go through — PlayerAdded for
+		whoever joins, and the seed loop for whoever is already here when the script runs. Kept in the
+		PlayerAdded callback it covered the first path and silently missed the second, which in Studio is
+		the only one that ever runs.
+
+		Two events rather than one, because they are two different moments with two different subjects:
+		`CharacterAdded` is about the player coming back, and `CharacterRemoving` is about the character
+		going away. `CharacterRemoving` also fires while the Instance is still valid, which is what makes
+		it the right place to drop the effects — the id they are keyed by is that Instance.
+	]]
+	player.CharacterAdded:Connect(function()
+		local current = sessions[player]
+		if current ~= nil then
+			current.manager:reset()
+			current.resources:refill()
+		end
+	end)
+
+	player.CharacterRemoving:Connect(function(character)
+		local current = sessions[player]
+		if current ~= nil then
+			-- The id a target is keyed by is the character Instance, not the Player. Clearing by
+			-- player would remove nothing and leave the effects running on a corpse.
+			current.effects:clear(character)
+		end
+	end)
+
 	return session
 end
 
@@ -122,47 +165,9 @@ local function snapshot(session)
 	return state
 end
 
---[[
-	Death and respawn.
-
-	Three functions were written and tested for this and none of them was ever called: reset() clears
-	cooldowns and casts, refill() takes the pools back to full, clear() drops the effects. Without
-	this wiring a player who dies mid-cast keeps the cooldown, the spent mana and the poison on their
-	corpse, and comes back with all three.
-
-	Two events rather than one, because they are two different moments with two different subjects:
-	`CharacterAdded` is about the player coming back, and `CharacterRemoving` is about the character
-	going away. `CharacterRemoving` also fires while the Instance is still valid, which is what makes
-	it the right place to drop the effects — the id they are keyed by is that Instance.
-]]
 Players.PlayerAdded:Connect(function(player)
 	buildSession(player)
-
-	player.CharacterAdded:Connect(function()
-		local session = sessions[player]
-		if session ~= nil then
-			session.manager:reset()
-			session.resources:refill()
-		end
-	end)
-
-	player.CharacterRemoving:Connect(function(character)
-		local session = sessions[player]
-		if session ~= nil then
-			-- The id a target is keyed by is the character Instance, not the Player. Clearing by
-			-- player would remove nothing and leave the effects running on a corpse.
-			session.effects:clear(character)
-		end
-	end)
 end)
-
--- And the players who are already here. A script connects PlayerAdded at the point it runs, and in
--- Studio that point is reached AFTER the local player has joined — so the event never fires for them
--- and they get no session: no state, no intents, nothing. This is not a Studio quirk to work around;
--- the same thing happens to anyone already in a server when a script reloads.
-for _, player in ipairs(Players:GetPlayers()) do
-	buildSession(player)
-end
 
 Players.PlayerRemoving:Connect(function(player)
 	local session = sessions[player]

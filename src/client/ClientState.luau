@@ -9,8 +9,20 @@
 
 local ClientState = {}
 
+--[[
+	Initialisation order, for whoever reads this in phase 6/7.
+
+	This module is required and its fields assigned in two different places: `latest` is written by
+	`set`, and `changed` is created by the client script — which requires this module and sets it on
+	the next line. So a consumer that requires this module BEFORE the client script runs sees
+	`changed == nil`. Guard on it (`if ClientState.changed ~= nil`), or require this from the client
+	script and nowhere earlier.
+
+	Both fields being nil until something writes them is deliberate: a module that invents a default
+	state is a module that reports a state the server never sent.
+]]
 ClientState.latest = nil
-ClientState.changed = nil -- a BindableEvent, created by the client, for whatever draws this
+ClientState.changed = nil -- a BindableEvent, created by the client script, for whatever draws this
 
 function ClientState.set(state)
 	ClientState.latest = state
