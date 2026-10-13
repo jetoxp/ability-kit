@@ -174,11 +174,31 @@ T("validating before init returns an error instead of crashing", function()
 	assert(#errors > 0 and table.concat(errors):find("init"), "should say init was never called")
 end)
 
-T("two abilities sharing an id are caught by the catalog check", function()
+T("two abilities sharing an id are caught on an ARRAY, the shape the catalog passes", function()
+	-- This is the case that was code dead: iterating an array yields numeric keys, which are
+	-- unique by construction, so keying the check on the table key could never collide.
 	local a, b = valid(), valid()
-	local catalog = { [1] = a, [2] = b }
-	local errors = AbilityDefinition.validateCatalog(catalog)
+	a.id, b.id = "SAME_ID", "SAME_ID"
+	AbilityDefinition.init(Config, {})
+	local errors = AbilityDefinition.validateCatalog({ a, b })
 	assert(#errors > 0, "a duplicate id makes the second ability unreachable forever")
+	assert(table.concat(errors):find("duplicate"), "the error must say what is wrong")
+	assert(table.concat(errors):find("SAME_ID"), "and name the id that is duplicated")
+end)
+
+T("two abilities sharing an id are caught on a DICT too", function()
+	local a, b = valid(), valid()
+	a.id, b.id = "SAME_ID", "SAME_ID"
+	AbilityDefinition.init(Config, {})
+	local errors = AbilityDefinition.validateCatalog({ FIRST = a, SECOND = b })
+	assert(#errors > 0, "the dict shape must be checked as well")
+end)
+
+T("a non-table entry is reported instead of crashing the catalog check", function()
+	AbilityDefinition.init(Config, {})
+	local errors = AbilityDefinition.validateCatalog({ valid(), "not a table" })
+	assert(#errors > 0, "a junk entry must be reported, not thrown")
+	assert(table.concat(errors):find("not a table"), "and it must say so in plain words")
 end)
 
 -- ===== warnings, not errors =====
@@ -212,5 +232,30 @@ T("get returns the definition it was given, and nil for anything else", function
 	assert(AbilityDefinition.get("NOPE") == nil, "an unknown id must return nil")
 	assert(AbilityDefinition.get(nil) == nil, "a nil id must not throw")
 end)
+
+T(
+	"get works on the dict shape the catalog builds, and fails on the array it must not be",
+	function()
+		-- The contract the catalog has to honour. If it returned the array it collects, every
+		-- lookup would be nil and nothing would say why.
+		local fireball = require("../src/shared/abilities/Fireball")
+		local heal = require("../src/shared/abilities/Heal")
+
+		local asArray = { fireball, heal }
+		local asDict = {}
+		for _, definition in ipairs(asArray) do
+			asDict[definition.id] = definition
+		end
+
+		AbilityDefinition.init(Config, asDict)
+		assert(AbilityDefinition.get("FIREBALL") == fireball, "the dict must be keyed by id")
+
+		AbilityDefinition.init(Config, asArray)
+		assert(
+			AbilityDefinition.get("FIREBALL") == nil,
+			"an array cannot be looked up by id: this is the bug the dict shape exists to prevent"
+		)
+	end
+)
 
 return T.report()

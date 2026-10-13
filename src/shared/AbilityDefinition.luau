@@ -260,14 +260,19 @@ function AbilityDefinition.validate(definition)
 	return errors, warnings
 end
 
--- Checks a whole catalog at once. Catches the one mistake that per-definition validation cannot
--- see: two abilities sharing an id, which would make the second unreachable forever.
-function AbilityDefinition.validateCatalog(catalog)
-	local cfg = config()
-	if not cfg then
-		return { "AbilityDefinition.init was never called" }, {}
-	end
+--[[
+	Checks a whole catalog at once.
 
+	Accepts both shapes the kit uses: an ARRAY (what the catalog file returns, and what the
+	tests pass) and a DICT keyed by id (what the game runs on after catalog building).
+
+	The duplicate check keys on definition.id, never on the table key. That distinction is the
+	whole point of this function: iterating an array yields 1, 2, 3..., and table keys are
+	unique by construction, so keying on them can never collide — it would be a check that
+	reads like a guarantee and enforces nothing. Two entries may share an index nowhere and
+	still share an id, which is the case that silently makes the second ability unreachable.
+]]
+function AbilityDefinition.validateCatalog(catalog)
 	local errors, warnings = {}, {}
 	local seen = {}
 
@@ -275,18 +280,39 @@ function AbilityDefinition.validateCatalog(catalog)
 		return { "catalog is not a table" }, warnings
 	end
 
-	for id, definition in pairs(catalog) do
-		if seen[id] then
-			table.insert(errors, string.format("duplicate id '%s'", tostring(id)))
+	for key, definition in pairs(catalog) do
+		local label
+		if
+			type(definition) == "table"
+			and type(definition.id) == "string"
+			and definition.id ~= ""
+		then
+			label = definition.id
+		else
+			-- No usable id: name the position instead of the index-as-string, which would
+			-- print as "1" and read like an ability called 1.
+			label = string.format("<entry at key %s>", tostring(key))
 		end
-		seen[id] = true
+
+		if type(definition) ~= "table" then
+			table.insert(errors, string.format("%s: definition is not a table", label))
+			continue
+		end
+
+		if seen[definition.id] then
+			table.insert(
+				errors,
+				string.format("%s: duplicate id '%s'", label, tostring(definition.id))
+			)
+		end
+		seen[definition.id] = true
 
 		local defErrors, defWarnings = AbilityDefinition.validate(definition)
 		for _, message in ipairs(defErrors) do
-			table.insert(errors, string.format("%s: %s", tostring(id), message))
+			table.insert(errors, string.format("%s: %s", label, message))
 		end
 		for _, message in ipairs(defWarnings) do
-			table.insert(warnings, string.format("%s: %s", tostring(id), message))
+			table.insert(warnings, string.format("%s: %s", label, message))
 		end
 	end
 
