@@ -152,6 +152,25 @@ a decision nobody wrote is a decision that gets re-decided by whoever touches it
 *requests* log: a refused intent, an empty slot, a refusal from `canActivate`. That distinction —
 invalid request versus legitimate miss — is the whole reason the logs are useful.
 
+### The hybrid case: a miss on an ability that also heals
+
+D5 says heal, buff and dash always go to the caster. D6 says a miss produces zero events. Combined, a
+raycast ability carrying `[damage, heal]` that hits nothing produces:
+
+- **damage:** no resolved target, so **no damage event**;
+- **heal:** it goes to the caster unconditionally, so **the heal still happens**.
+
+**That is the decision, not a bug.** A miss in a hybrid ability still heals its caster. The
+alternative — a heal contingent on the shot landing — would require a hit/miss signal to travel from
+the resolver up into the effect system, which is exactly the coupling the seam exists to prevent: the
+effect system receives a target and does not know who chose it, and teaching it about misses for the
+sake of one combination would put the outcome of detection in three files instead of one.
+
+Whoever defines the first hybrid ability should read this paragraph rather than discover it in a
+playtest. It is deliberately not a spec case for `TargetResolver`: a miss is not a resolver concern,
+and the resolver has no opinion about it — the behaviour lives in the pre-split, and the pre-split's
+proof is the engine run.
+
 ### D7. The enum is validated against its owner, injected rather than copied
 
 `AbilityDefinition` validates `targeting` against the list `TargetResolver` declares, passed in at
@@ -199,16 +218,19 @@ shape of the split matters:
 --     effects:applyEffect(effect, firing.id, context)
 -- with context = { source = caster, target = target, direction = ... }.
 -- The point of the block is the nesting, and the nesting is real.
+-- direction comes from EffectAdapter.directionOf(casterCharacter) and goes into every context;
+-- only dash reads it, but the context is uniform. Without it a dash event carries direction = nil
+-- and the adapter no-ops, which is a silent shortening of a dash rather than an error.
 for _, target in ipairs(resolved) do
     for _, effect in ipairs(firing.effects) do
         if TargetResolver.isOffensive(effect.kind) then
-            effects:applyEffect(effect, firing.id, { source = caster, target = target })
+            effects:applyEffect(effect, firing.id, { source = caster, target = target, direction = direction })
         end
     end
 end
 for _, effect in ipairs(firing.effects) do
     if not TargetResolver.isOffensive(effect.kind) then
-        effects:applyEffect(effect, firing.id, { source = caster, target = caster })  -- ONCE
+        effects:applyEffect(effect, firing.id, { source = caster, target = caster, direction = direction })  -- ONCE
     end
 end
 ```
@@ -218,6 +240,19 @@ called — there is nothing to resolve — but the shape of the data does not ch
 above never needs to know which targeting the ability had. One shape, one loop, and no branch on
 targeting in the heartbeat. The alternative, branching in the Bootstrap, would put a copy of the
 targeting rules in the file that is supposed to know nothing about them.
+
+**There is exactly one branch, and it lives in the resolution step.** "No branch on targeting in the
+heartbeat" was too strong a sentence: the decision to call the resolver or to use `{ caster }` has to
+be taken somewhere, and that somewhere is one line, per firing, reading
+`ability:getDefinition().targeting`. **The pre-split loops below never see it** — they receive a list
+and do not know where it came from.
+
+And that is safe because of the validator, which is the connection worth naming: **the offensive
+branch can never fire for a `self` ability, because the mirror rules of D5 refused that combination at
+load.** A `self` ability carries no offensive effect, so running the same loop over `{ caster }`
+produces only the non-offensive events it was always going to produce. **The catalog's coherence is
+what makes the single loop shape safe** — remove the load-time rule and this shape stops being
+correct, silently.
 
 **The non-offensive loop is outside the target loop on purpose.** A raycast ability that buffs
 itself while hitting three enemies produces **one** buff event, not three. The nested version would be
