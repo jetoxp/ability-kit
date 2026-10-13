@@ -24,6 +24,7 @@ cargar("AbilityDefinition", "./AbilityDefinitionSpec")
 cargar("Ability", "./AbilitySpec")
 cargar("AbilityManager", "./AbilityManagerSpec")
 cargar("ResourceManager", "./ResourceManagerSpec")
+cargar("EffectSystem", "./EffectSystemSpec")
 
 local bien = 0
 for _, ok in ipairs(todas) do

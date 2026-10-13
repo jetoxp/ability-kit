@@ -243,4 +243,46 @@ T("two managers do not share pools", function()
 	assert(secondManager:getCurrent("mana") == 100, "the second owner is untouched")
 end)
 
+T("a string starting value is refused, matching canPay's strictness", function()
+	-- Half-indulgent is worse than either extreme: a module that rejects "50" as a cost and accepts
+	-- it as a starting value is inconsistent, and it is inconsistent in the untested direction.
+	local ok = pcall(function()
+		return ResourceManager.new(Config, { mana = "50" })
+	end)
+	assert(not ok, "a string must not be quietly converted")
+end)
+
+T("restore with zero is legal and changes nothing", function()
+	-- The guard is < 0, not <= 0. Worth pinning so the boundary is a decision rather than a hole
+	-- somebody later closes by accident.
+	local r = fresh({ mana = 40 })
+	assert(r:restore("mana", 0), "zero is a valid amount")
+	assert(r:getCurrent("mana") == 40, "that changes no pool")
+end)
+
+T("getOwnerResources hands back the live pools in the shape an owner is read from", function()
+	-- Ability:canActivate reads owner.resources[pool].current. This is that, so the manager's own
+	-- affordability check is the only one needed.
+	local r = fresh({ mana = 100 })
+	local pools = r:getOwnerResources()
+	assert(pools.mana.current == 100, "the shape must match what canActivate reads")
+	assert(pools.mana.max == Config.RESOURCES.mana.max, "including the max")
+
+	r:spend({ mana = 40 })
+	assert(pools.mana.current == 60, "and it must be live, not a snapshot of the pools")
+
+	local fakeOwner = { alive = true, resources = pools }
+	local Ability = require("../src/shared/Ability")
+	local ability = Ability.new({
+		id = "X",
+		displayName = "X",
+		cost = { mana = 30 },
+		cooldown = 0,
+		castTime = 0,
+		range = 0,
+		effects = { { kind = "damage", amount = 1 } },
+	}, Config)
+	assert(ability:canActivate(fakeOwner), "and an ability must be able to read it directly")
+end)
+
 return T.report()

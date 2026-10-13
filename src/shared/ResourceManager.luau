@@ -31,10 +31,20 @@ function ResourceManager.new(config, initial)
 	for name, spec in pairs(config.RESOURCES) do
 		local start = spec.start
 		if type(initial) == "table" and initial[name] ~= nil then
-			start = initial[name]
+			local given = initial[name]
+			-- Strict, and deliberately matching canPay, which refuses a string cost. A module that
+			-- rejects "50" in one place and quietly converts it in another is not being lenient, it
+			-- is being inconsistent — and the place it converts is the one nobody tests.
+			-- An assert rather than a refusal because this is a construction-time programming error,
+			-- like the ones Ability.new makes, not a runtime condition.
+			assert(
+				type(given) == "number" and given == given,
+				string.format("initial.%s must be a number, got %s", name, type(given))
+			)
+			start = given
 		end
 		self.pools[name] = {
-			current = math.clamp(tonumber(start) or spec.max, 0, spec.max),
+			current = math.clamp(start, 0, spec.max),
 			max = spec.max,
 			regen = spec.regen or 0,
 		}
@@ -133,6 +143,9 @@ end
 	A negative amount is refused rather than treated as a spend: this function exists to add, and a
 	caller who wants to subtract is calling the wrong one. Doing it silently is how a heal becomes a
 	damage with a sign error nobody sees.
+
+	Zero is accepted and does nothing, and that is the intended reading of the boundary: 0 is a
+	valid amount that changes no pool, not a spend in disguise. The guard is `< 0`, not `<= 0`.
 ]]
 function ResourceManager:restore(name, amount)
 	if type(amount) ~= "number" or amount ~= amount or amount < 0 then
@@ -159,6 +172,10 @@ end
 
 	Regeneration runs regardless of what else is happening. A game that wants mana to stop coming
 	back while casting can layer that on top; a kit that assumes it cannot be turned off.
+
+	Returns self, like refill. The module's signatures fall into two groups on purpose: the ones that
+	just move state are chainable and return self, and the ones that can be refused are transactions
+	and return (ok, reason). Nothing does both.
 ]]
 function ResourceManager:advance(dt)
 	if type(dt) ~= "number" or dt <= 0 or dt ~= dt then
@@ -171,6 +188,21 @@ function ResourceManager:advance(dt)
 		end
 	end
 	return self
+end
+
+--[[
+	The pool table itself, in the shape an ability owner is read from.
+
+	`Ability:canActivate` reads `owner.resources[pool].current`, which is exactly what these pools
+	already are — so handing this back is what lets the composition root ask "can you afford it?"
+	by calling `manager:activate`, without a second affordability check that could disagree with
+	the first. Phase 5's note about checking canPay before activating is answered here: the check
+	the manager already performs IS canPay, when it is handed these.
+
+	Returned by reference on purpose. A copy would let the two drift apart one frame at a time.
+]]
+function ResourceManager:getOwnerResources()
+	return self.pools
 end
 
 --[[
