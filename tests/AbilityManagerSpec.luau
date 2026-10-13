@@ -256,19 +256,17 @@ T("two abilities firing in the same tick come back in slot order, not in pairs o
 	-- Otherwise the effect system sees them in a different order on different runs, and that is a
 	-- bug that reproduces once in a hundred games.
 	--
-	-- Getting two into one tick needs the instant ability on a LOWER slot than the cast: activate
-	-- the cast, wait out the global cooldown, activate the instant, and then advance far enough
-	-- that the cast finishes on the same tick the instant fires.
-	-- With the shipped global cooldown this is unreachable, and that is worth stating: an instant
-	-- cannot start while another ability casts, and two instants cannot both start inside 0.35s.
-	-- Lowering the cooldown to zero is the only honest way to reach the case and check the order.
-	local original = Config.GLOBAL_COOLDOWN
-	Config.GLOBAL_COOLDOWN = 0
-	local m = managerWith({ [1] = "FLASH", [2] = "BOLT" })
+	-- With the shipped global cooldown this is unreachable: an instant cannot start while another
+	-- ability casts, and two instants cannot both start inside 0.35s. So the case runs against a
+	-- config with the lockout at zero — an injected copy, not a mutated Config, so a failure in
+	-- here cannot poison whatever suite runs next.
+	local unlocked = table.clone(Config)
+	unlocked.GLOBAL_COOLDOWN = 0
+
+	local m = AbilityManager.new(unlocked, Ability, CATALOG, { [1] = "FLASH", [2] = "BOLT" })
 	m:activate(1, owner())
 	m:activate(2, owner())
 	local firings = m:advance(0.05)
-	Config.GLOBAL_COOLDOWN = original
 	assert(#firings == 2, "both must fire on this tick, got " .. #firings)
 	assert(firings[1].slot == 1, "slot 1 comes first")
 	assert(firings[2].slot == 2, "and slot 2 second")
@@ -303,7 +301,7 @@ T("toState carries the four fields and nothing that would help an exploiter", fu
 	m:advance(0.05)
 	local state = m:toState()
 	assert(state.globalCooldown ~= nil, "the client draws the greyed-out slots from this")
-	assert(state.cooldowns ~= nil and state.cooldowns.FLASH ~= nil, "per ability")
+	assert(state.cooldowns ~= nil and state.cooldowns[1] ~= nil, "keyed by slot, per ability")
 	assert(state.equipped ~= nil and state.equipped[1] == "FLASH", "and what is on each slot")
 	assert(state.cost == nil, "the cost is not the client's business")
 	assert(state.effects == nil, "nor the effects")
@@ -340,13 +338,82 @@ end)
 -- ===== independence =====
 
 T("two managers, two players: no shared slots, timers or cooldowns", function()
-	local uno = managerWith({ [1] = "FLASH" })
-	local dos = managerWith({ [1] = "FLASH" })
-	uno:activate(1, owner())
-	uno:advance(0.05)
-	assert(dos:isGlobalReady(), "the second player's global cooldown must be untouched")
-	assert(dos:getAbility(1):isReady(), "and their ability ready")
-	assert(uno:getAbility(1) ~= dos:getAbility(1), "instances must not be shared")
+	local firstManager = managerWith({ [1] = "FLASH" })
+	local secondManager = managerWith({ [1] = "FLASH" })
+	firstManager:activate(1, owner())
+	firstManager:advance(0.05)
+	assert(secondManager:isGlobalReady(), "the second player's global cooldown must be untouched")
+	assert(secondManager:getAbility(1):isReady(), "and their ability ready")
+	assert(
+		firstManager:getAbility(1) ~= secondManager:getAbility(1),
+		"instances must not be shared"
+	)
 end)
+
+T("the same ability on two slots keeps two separate cooldowns", function()
+	-- Keying the snapshot by id collapsed these into one, and the client drew a cooldown on both
+	-- slots or on neither. Keyed by slot, each one is its own.
+	local m = managerWith({ [1] = "FLASH", [2] = "FLASH" })
+	assert(m:getAbility(2) ~= nil, "a loadout may hold the same ability twice, which is the point")
+	m:activate(1, owner())
+	m:advance(0.05)
+	local state = m:toState()
+	assert(state.cooldowns[1] > 0, "slot 1 must show its own cooldown")
+	assert(state.cooldowns[2] == 0, "and slot 2 must not inherit it")
+end)
+
+T("the snapshot carries exactly the fields Config reserves for the manager", function()
+	-- The drift check. Config is the one place the shape is written down, so a field appearing in
+	-- one side and not the other becomes a failing test instead of a divergence nobody notices.
+	local m = managerWith({ [1] = "HEAL" })
+	m:activate(1, owner())
+	m:advance(0.2)
+	local snapshot = m:toState()
+
+	for _, field in ipairs(Config.MANAGER_FIELDS) do
+		assert(
+			snapshot[field] ~= nil,
+			"Config declares '" .. field .. "' and the snapshot omits it"
+		)
+	end
+
+	for name in pairs(snapshot) do
+		local declared = false
+		for _, field in ipairs(Config.MANAGER_FIELDS) do
+			if field == name then
+				declared = true
+				break
+			end
+		end
+		assert(
+			declared,
+			"the snapshot carries '" .. name .. "', which Config.MANAGER_FIELDS does not declare"
+		)
+	end
+end)
+
+T(
+	"activate returns the slot's ability on every return, and nil only when the slot is empty",
+	function()
+		local m = managerWith({ [1] = "HEAL" })
+		local _, _, onSuccess = m:activate(1, owner())
+		assert(onSuccess == m:getAbility(1), "a success hands back the ability")
+
+		m:advance(Config.GLOBAL_COOLDOWN + 0.01)
+		local ok, reason, onEmpty = m:activate(2, owner())
+		assert(
+			not ok and reason == "abilityNotEquipped",
+			"slot 2 is empty, got " .. tostring(reason)
+		)
+		assert(onEmpty == nil, "so there is no ability to hand back")
+
+		m:activate(1, owner())
+		local _, _, onCasting = m:activate(1, owner())
+		assert(
+			onCasting == m:getAbility(1),
+			"a refusal on an occupied slot still names its ability"
+		)
+	end
+)
 
 return T.report()

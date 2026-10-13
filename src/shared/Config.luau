@@ -14,16 +14,34 @@ local Config = {}
 -- Bump this when the save format changes so old data can be migrated instead of thrown away.
 Config.SCHEMA_VERSION = 1
 
--- The state the server owns and pushes to the client. Documented here, not in a comment buried
--- in the manager, because three separate modules have to agree on it:
---
---   resources : { [name] = { current = number, max = number } }
---   cooldowns : { [abilityId] = secondsLeft }
---   cast      : { abilityId = string, endsAt = number, interrupted = boolean } | nil
---
--- Note what is NOT here: the client is never told a damage number, a hit result, or anything it
--- could use to decide an outcome. It gets what it needs to draw a bar and play an animation.
-Config.STATE_FIELDS = { "resources", "cooldowns", "cast" }
+--[[
+	The state the server owns and pushes to the client. It lives here, and only here, because
+	several modules have to agree on it and a shape duplicated in two places drifts in silence.
+
+	    resources     : { [name] = { current = number, max = number } }        (ResourceManager)
+	    cooldowns     : { [slot] = secondsLeft }                               (AbilityManager)
+	    equipped      : { [slot] = abilityId }                                 (AbilityManager)
+	    globalCooldown: secondsLeft                                            (AbilityManager)
+	    cast          : { id, slot, remaining, progress } | nil                (AbilityManager)
+
+	Two of these were wrong in an earlier draft and are worth the note:
+
+	`cooldowns` is keyed by SLOT, not by ability id. A loadout may hold the same ability on two
+	slots, and keying by id collapses them into one cooldown that the client then draws twice —
+	or once, for two slots. A hotbar is a list of slots; the client draws it by slot.
+
+	`cast` carries `remaining` (seconds left) and `progress` (0 to 1), not an `endsAt` timestamp.
+	The client's clock is not the server's, so a deadline it has to compare against its own time is
+	a deadline it will get wrong by however far the two clocks disagree.
+
+	Note what is absent: the client is never told a damage number, a hit result, a cost or an
+	effect. It gets what it needs to draw a bar and play an animation.
+]]
+Config.STATE_FIELDS = { "resources", "cooldowns", "equipped", "globalCooldown", "cast" }
+
+-- The subset AbilityManager is responsible for. Kept next to the full list, rather than derived
+-- from it, so a test can check the manager emits exactly this and nothing else.
+Config.MANAGER_FIELDS = { "cooldowns", "equipped", "globalCooldown", "cast" }
 
 -- Seconds added after any ability fires. Stops two different keys being mashed in one frame
 -- from producing two effects, and is short enough that it never feels unresponsive.

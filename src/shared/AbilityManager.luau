@@ -140,7 +140,11 @@ end
 --[[
 	The activation entry point. This is the function the remote handler will call in phase 5, so
 	it answers the way a remote needs: a boolean, a reason key from Config.MESSAGES, and the
-	ability that was involved (or nil), so the caller can log and the UI can react.
+	ability on the requested slot, so the caller can log and the UI can react.
+
+	The third value follows one rule across every return: it is the ability on that slot, or nil
+	when the slot is empty. It is not "whatever object explained the refusal" — that would vary by
+	branch and make the caller's logging depend on which check happened to fail.
 
 	Order matters, and it is deliberate: the slot, then the global cooldown, then the ability's own
 	rules. Checking the ability first would let a player with an off-cooldown ability bypass the GCD
@@ -155,7 +159,10 @@ function AbilityManager:activate(slot, owner)
 	-- Before the global cooldown, because it is the truer reason: a player mid-cast pressing
 	-- another key is not "wait a moment", they are busy.
 	if self:isCasting() then
-		return false, "alreadyCasting", nil
+		-- The third value is "the ability on the requested slot, if there is one", and that rule
+		-- holds for every return in this function: nil means the slot itself is empty, never that
+		-- a reason happened to be decided early.
+		return false, "alreadyCasting", ability
 	end
 
 	if not self:isGlobalReady() then
@@ -253,7 +260,10 @@ function AbilityManager:toState()
 		if ability ~= nil then
 			local id = ability:getDefinition().id
 			equipped[slot] = id
-			cooldowns[id] = ability:getCooldownRemaining()
+			-- Keyed by slot, never by id. Two slots can hold the same ability, and keying by id
+			-- would collapse them into a single cooldown that the client then draws on both slots
+			-- or on neither. A hotbar is a list of slots; that is how it is drawn.
+			cooldowns[slot] = ability:getCooldownRemaining()
 
 			-- getCastProgress is 1 when there is nothing to cast, so the state check is what
 			-- decides whether a cast bar exists at all.
