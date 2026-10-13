@@ -386,3 +386,16 @@ than swallowed.
 3. **`PHASE_5.md` gets consolidated** into a state README when phase 6 closes — it has accumulated
    duplicated sections and "what this round changed" blocks referencing rounds that no longer exist
    as rounds.
+
+## A rule for the README's own table
+
+The module table in the README was written from the design's intent rather than from the code, and one
+row was false because of it: `ResourceManager` was described as not deciding affordability, while
+`canPay` is in the module and the module's own docblock says the ability's check is designed to match
+it. This is a new mode of the defect the whole project has been chasing, and a more insidious one than
+a stale paste: **it did not lie by carelessness, it lied by admiration** — it described the module the
+design wanted rather than the one that was written, which is the version that feels right while you
+type it.
+
+The rule that follows: **the table's rows describe executable code, not aspirations.** The philosophy
+belongs in these decision sections, where it can be argued and where a reader knows it is an argument.

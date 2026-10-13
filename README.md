@@ -63,7 +63,7 @@ One line each, including what it does **not** do:
 | `AbilityDefinition` | Validates definitions and builds the catalog | Know what an effect does |
 | `Ability` | The state machine for one ability | Apply effects, or know about other abilities |
 | `AbilityManager` | Loadout, per-slot cooldowns, global cooldown, the tick | Know what mana is, or what an effect is |
-| `ResourceManager` | Pools, spending, regeneration | Decide whether something is affordable — that is a refusal, and refusals belong to the ability |
+| `ResourceManager` | Pools, spending, regeneration, and `canPay` — whether a cost is payable | Decide whether an activation happens: the refusal and its message belong to the ability, and `getOwnerResources()` hands the ability the live pools so the two checks cannot disagree |
 | `EffectSystem` | Emits effect events; instant ones fire now, timed ones register | Apply anything, or touch a Humanoid |
 | `TargetResolver` | Chooses who is hit, from candidates and an impact point | Ask where a wall is, or touch the world |
 | `Net` | The wire, and the client-facing trust boundary | Trust the client |
