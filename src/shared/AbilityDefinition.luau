@@ -27,6 +27,32 @@ AbilityDefinition.EFFECT_KINDS = {
 	"dash", -- movement, resolved by the server so the client cannot teleport itself
 }
 
+-- The fields a definition may carry. Anything else is reported, because a typo'd field is
+-- IGNORED, not rejected: `casttime = 5` leaves the ability with no cast time at all, and the
+-- difference between that and a deliberate custom field cannot be seen from here. Hence a
+-- warning rather than an error — the framework says what it ignores and lets the game decide.
+AbilityDefinition.ROOT_FIELDS = {
+	"id",
+	"displayName",
+	"description",
+	"cost",
+	"cooldown",
+	"castTime",
+	"range",
+	"effects",
+}
+
+-- Per effect kind. This is the list that has to stay honest: if a kind reads a field at runtime,
+-- that field belongs here, or the validator is describing a shape the code does not use.
+AbilityDefinition.EFFECT_FIELDS = {
+	damage = { "kind", "amount", "radius" },
+	dot = { "kind", "amount", "duration", "interval" },
+	heal = { "kind", "amount", "radius" },
+	buff = { "kind", "stat", "multiplier", "duration" },
+	debuff = { "kind", "stat", "multiplier", "duration" },
+	dash = { "kind", "distance", "duration" },
+}
+
 AbilityDefinition.CATALOG = nil
 AbilityDefinition.CONFIG = nil
 
@@ -49,6 +75,45 @@ local function log(message: string)
 	else
 		print(message)
 	end
+end
+
+-- Names an unknown field and, when the difference is only case, names the one that was meant.
+-- The second half matters more than it looks: the ability still runs, so the only trace of a typo
+-- is this line. Saying "unknown field" alone leaves the reader to spot it.
+local function sortedLetters(text)
+	local letras = {}
+	for i = 1, #text do
+		table.insert(letras, string.sub(text, i, i))
+	end
+	table.sort(letras)
+	return table.concat(letras)
+end
+
+local function unknownField(where, name, allowed)
+	local texto = tostring(name)
+	local lower = string.lower(texto)
+	local firma = sortedLetters(lower)
+
+	for _, candidate in ipairs(allowed) do
+		local lowerCandidate = string.lower(candidate)
+		-- Equal ignoring case covers `casttime` for `castTime`. Equal with the letters sorted
+		-- covers a transposition, `raduis` for `radius`, which is the typo that actually happens
+		-- when someone types a word they know. A genuine anagram of a real field would also match,
+		-- which is a wrong suggestion in a warning — cheap, and worth the transposition it catches.
+		if lowerCandidate == lower or sortedLetters(lowerCandidate) == firma then
+			return string.format(
+				"%s: unknown field '%s' — did you mean '%s'? It is ignored, so the ability will behave as if it were absent",
+				where,
+				texto,
+				candidate
+			)
+		end
+	end
+	return string.format(
+		"%s: unknown field '%s' is ignored, so the ability will behave as if it were absent",
+		where,
+		tostring(name)
+	)
 end
 
 local function isPositiveNumber(value)
@@ -99,6 +164,18 @@ function AbilityDefinition.validate(definition)
 		and (type(definition.castTime) ~= "number" or definition.castTime < 0)
 	then
 		table.insert(errors, "castTime must be a number >= 0")
+	end
+	-- Zero stays legal on purpose: Dash and Heal both declare range = 0, meaning "not aimed at
+	-- anything". Only a negative or a non-number is a mistake.
+	if definition.range ~= nil and (type(definition.range) ~= "number" or definition.range < 0) then
+		table.insert(errors, "range must be a number >= 0 when present")
+	end
+
+	-- Unknown root fields. Warned, not rejected: see ROOT_FIELDS above.
+	for name in pairs(definition) do
+		if not table.find(AbilityDefinition.ROOT_FIELDS, name) then
+			table.insert(warnings, unknownField("definition", name, AbilityDefinition.ROOT_FIELDS))
+		end
 	end
 
 	-- Cost: every key must be a real pool, and no cost may exceed that pool's maximum, because
@@ -223,6 +300,11 @@ function AbilityDefinition.validate(definition)
 					table.insert(errors, where .. ".duration must be a positive number")
 				end
 			elseif effect.kind == "dash" then
+				-- Dash.luau uses duration, so it has to be checked. Leaving it out made the
+				-- comment above a promise the code did not keep: duration = "fast" ran fine.
+				if not isPositiveNumber(effect.duration) then
+					table.insert(errors, where .. ".duration must be a positive number")
+				end
 				if not isPositiveNumber(effect.distance) then
 					table.insert(errors, where .. ".distance must be a positive number")
 				elseif effect.distance > cfg.EFFECT_LIMITS.maxDashDistance then
@@ -239,6 +321,27 @@ function AbilityDefinition.validate(definition)
 		end
 	end
 
+	-- Unknown fields inside an effect, checked once its kind is known to be a real one. This is
+	-- the per-kind half of the whitelist: `raduis` on a damage effect validated clean and then
+	-- did nothing, because the real field it meant was never read.
+	if type(definition.effects) == "table" then
+		for index, effect in ipairs(definition.effects) do
+			if type(effect) == "table" then
+				local allowed = AbilityDefinition.EFFECT_FIELDS[effect.kind]
+				if allowed then
+					for name in pairs(effect) do
+						if not table.find(allowed, name) then
+							table.insert(
+								warnings,
+								unknownField(string.format("effects[%d]", index), name, allowed)
+							)
+						end
+					end
+				end
+			end
+		end
+	end
+
 	-- Taste rules. These run fine, so they are warnings: the framework does not know whether the
 	-- designer meant it, and pretending otherwise would make it reject working content.
 	if
@@ -247,7 +350,10 @@ function AbilityDefinition.validate(definition)
 		and type(definition.effects) == "table"
 	then
 		for _, effect in ipairs(definition.effects) do
-			if effect.kind == "damage" and (effect.amount or 0) >= 20 then
+			if
+				effect.kind == "damage"
+				and (effect.amount or 0) >= cfg.EFFECT_LIMITS.spammableDamageThreshold
+			then
 				table.insert(warnings, "instant, no cooldown, and hits hard: spammable by design?")
 				break
 			end
@@ -278,6 +384,13 @@ function AbilityDefinition.validateCatalog(catalog)
 
 	if type(catalog) ~= "table" then
 		return { "catalog is not a table" }, warnings
+	end
+
+	if next(catalog) == nil then
+		-- A warning, not an error: a game under construction can legitimately start with none.
+		-- Worth saying out loud all the same, because the kit will then load, run, and do nothing
+		-- at all — which is hard to tell apart from a broken build.
+		table.insert(warnings, "the catalog is empty: the kit will load and no ability will exist")
 	end
 
 	for key, definition in pairs(catalog) do

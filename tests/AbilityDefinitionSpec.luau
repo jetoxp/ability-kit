@@ -322,4 +322,106 @@ T("buildCatalog accepts the same input shapes validateCatalog does", function()
 	assert(fromDict.ALPHA == a and fromDict.BETA == b, "and must be keyed by definition.id")
 end)
 
+T("a typo'd field is a WARNING that names the field that was meant", function()
+	-- casttime = 5 validates clean and leaves the ability with no cast at all: a silent no-op.
+	local def = valid()
+	def.casttime = 5
+	local errors, warnings = validate(def)
+	assert(#errors == 0, "an unknown field must not reject a working ability")
+	assert(#warnings > 0, "but it must be reported")
+	local texto = table.concat(warnings)
+	assert(texto:find("casttime"), "and name the field")
+	assert(texto:find("castTime"), "and point at the one that was probably meant")
+end)
+
+T("a typo inside an effect is caught per kind", function()
+	local def = valid()
+	def.effects = { { kind = "damage", amount = 10, raduis = 10 } }
+	local errors, warnings = validate(def)
+	assert(#errors == 0, "still a legal ability")
+	assert(table.concat(warnings):find("radius"), "raduis must be reported, naming radius")
+end)
+
+T("an invented field is reported without inventing a suggestion", function()
+	local def = valid()
+	def.inventado = 1
+	local errors, warnings = validate(def)
+	assert(#errors == 0, "an invented field must not reject the ability")
+	local texto = table.concat(warnings)
+	assert(texto:find("inventado"), "the field must be named")
+	assert(not texto:find("did you mean"), "and no suggestion invented for a field that has none")
+end)
+
+T("a custom field is a warning, not a veto", function()
+	-- The framework's whole stance: it says what it ignores, it does not decide for the game.
+	local def = valid()
+	def.custom = { icon = "rbxassetid://1", sound = "rbxassetid://2" }
+	local errors, warnings = validate(def)
+	assert(#errors == 0, "a framework that rejects unknown fields refuses to be extended")
+	assert(#warnings > 0, "but silence would hide a real typo")
+end)
+
+T("range is validated, and zero stays legal", function()
+	local def = valid()
+	def.range = -50
+	assert(#validate(def) > 0, "a negative range is a mistake")
+
+	def.range = "far"
+	assert(#validate(def) > 0, "a string range is a mistake")
+
+	-- Dash and Heal both declare range = 0 meaning "not aimed at anything".
+	def.range = 0
+	local errors, warnings = validate(def)
+	assert(#errors == 0, "range = 0 must stay legal: two shipped abilities use it")
+	assert(#warnings == 0, "and must not warn")
+end)
+
+T("dash.duration is validated, because Dash.luau uses it", function()
+	local def = valid()
+	def.effects = { { kind = "dash", distance = 32, duration = -1 } }
+	assert(#validate(def) > 0, "a negative duration is a mistake")
+
+	def.effects = { { kind = "dash", distance = 32, duration = "fast" } }
+	assert(#validate(def) > 0, "a string duration is a mistake")
+
+	-- The real one has to keep passing, or the rule is wrong rather than the definition.
+	def.effects = { { kind = "dash", distance = 32, duration = 0.25 } }
+	local errors, warnings = validate(def)
+	assert(#errors == 0, "the shipped Dash must stay legal")
+	assert(#warnings == 0, "and must not warn")
+end)
+
+T("the spammable threshold comes from Config, not from a literal in the module", function()
+	local def = valid()
+	def.cooldown = 0
+	def.castTime = 0
+	def.cost = nil
+	def.effects = { { kind = "damage", amount = 40 } }
+
+	AbilityDefinition.init(Config, {})
+	local _, porDefecto = AbilityDefinition.validate(def)
+	assert(#porDefecto > 0, "40 damage with no cooldown warns at the shipped threshold")
+
+	-- Raise the config and the same definition stops warning. That is the proof it reads Config:
+	-- a literal in the module would keep warning no matter what the config says.
+	local original = Config.EFFECT_LIMITS.spammableDamageThreshold
+	Config.EFFECT_LIMITS.spammableDamageThreshold = 100
+	local _, elevado = AbilityDefinition.validate(def)
+	Config.EFFECT_LIMITS.spammableDamageThreshold = original
+
+	assert(#elevado == 0, "at a threshold of 100 the same ability must stop warning")
+end)
+
+T("an empty catalog warns instead of loading a kit that does nothing", function()
+	AbilityDefinition.init(Config, {})
+	local errors, warnings = AbilityDefinition.validateCatalog({})
+	assert(#errors == 0, "an error would forbid a game that starts with no abilities")
+	assert(#warnings > 0, "but a kit with zero abilities must say so")
+	assert(table.concat(warnings):find("empty"), "and say it plainly")
+
+	local catalog, buildErrors = AbilityDefinition.buildCatalog({})
+	assert(catalog ~= nil, "the build must still succeed: it is a warning, not a veto")
+	assert(#buildErrors == 0, "a warning must never turn into a build failure")
+end)
+
 return T.report()

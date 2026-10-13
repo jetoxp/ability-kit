@@ -40,6 +40,8 @@ test suite load them in a plain Luau interpreter, with no Studio running.
 
 ## The code
 
+*The state after review — this is what is in Studio and in git today.*
+
 ### `src/shared/Config.luau`
 
 *Every tunable, and the shape of the state the server replicates.*
@@ -124,7 +126,7 @@ return Config
 
 ### `src/shared/AbilityDefinition.luau`
 
-*The data contract and the validator — the module that makes this framework data-driven.*
+*The data contract, the validator, and the catalog builder.*
 
 ```lua
 --[[
@@ -389,14 +391,19 @@ function AbilityDefinition.validate(definition)
 	return errors, warnings
 end
 
--- Checks a whole catalog at once. Catches the one mistake that per-definition validation cannot
--- see: two abilities sharing an id, which would make the second unreachable forever.
-function AbilityDefinition.validateCatalog(catalog)
-	local cfg = config()
-	if not cfg then
-		return { "AbilityDefinition.init was never called" }, {}
-	end
+--[[
+	Checks a whole catalog at once.
 
+	Accepts both shapes the kit uses: an ARRAY (what the catalog file returns, and what the
+	tests pass) and a DICT keyed by id (what the game runs on after catalog building).
+
+	The duplicate check keys on definition.id, never on the table key. That distinction is the
+	whole point of this function: iterating an array yields 1, 2, 3..., and table keys are
+	unique by construction, so keying on them can never collide — it would be a check that
+	reads like a guarantee and enforces nothing. Two entries may share an index nowhere and
+	still share an id, which is the case that silently makes the second ability unreachable.
+]]
+function AbilityDefinition.validateCatalog(catalog)
 	local errors, warnings = {}, {}
 	local seen = {}
 
@@ -404,22 +411,80 @@ function AbilityDefinition.validateCatalog(catalog)
 		return { "catalog is not a table" }, warnings
 	end
 
-	for id, definition in pairs(catalog) do
-		if seen[id] then
-			table.insert(errors, string.format("duplicate id '%s'", tostring(id)))
+	for key, definition in pairs(catalog) do
+		local label
+		if
+			type(definition) == "table"
+			and type(definition.id) == "string"
+			and definition.id ~= ""
+		then
+			label = definition.id
+		else
+			-- No usable id: name the position instead of the index-as-string, which would
+			-- print as "1" and read like an ability called 1.
+			label = string.format("<entry at key %s>", tostring(key))
 		end
-		seen[id] = true
+
+		if type(definition) ~= "table" then
+			table.insert(errors, string.format("%s: definition is not a table", label))
+			continue
+		end
+
+		-- Only a usable string id can be a duplicate. The guard around `label` above is NOT
+		-- enough: it protects the message, not the write, and `seen[nil] = true` is a Lua error
+		-- ("table index is nil"). A definition with no id is reported by validate() a few lines
+		-- down, so this branch exists purely so the bookkeeping survives the trip there.
+		local id = definition.id
+		if type(id) == "string" and id ~= "" then
+			if seen[id] then
+				table.insert(errors, string.format("%s: duplicate id '%s'", label, id))
+			end
+			seen[id] = true
+		end
 
 		local defErrors, defWarnings = AbilityDefinition.validate(definition)
 		for _, message in ipairs(defErrors) do
-			table.insert(errors, string.format("%s: %s", tostring(id), message))
+			table.insert(errors, string.format("%s: %s", label, message))
 		end
 		for _, message in ipairs(defWarnings) do
-			table.insert(warnings, string.format("%s: %s", tostring(id), message))
+			table.insert(warnings, string.format("%s: %s", label, message))
 		end
 	end
 
 	return errors, warnings
+end
+
+--[[
+	Turns a list of definitions into the id-keyed catalog the rest of the game looks up.
+
+	This exists as a function rather than as code inside the catalog file for one reason: the
+	catalog file requires Roblox and cannot be loaded by the test suite, so anything living there
+	is untestable by definition — which is exactly how a missing init() shipped. Here the entire
+	order is covered by tests: validate the array while a duplicate is still twice visible, then
+	index it.
+
+	Returns nil plus the errors when the catalog is unusable, and that is structural, not
+	cosmetic: the only way to receive a catalog is to receive one that had no errors, so a caller
+	cannot half-succeed and let a broken table travel three modules before anyone notices.
+]]
+function AbilityDefinition.buildCatalog(definitions)
+	local errors, warnings = AbilityDefinition.validateCatalog(definitions)
+	if #errors > 0 then
+		return nil, errors, warnings
+	end
+
+	-- pairs, not ipairs, to match what validateCatalog accepts. With ipairs a dict validated
+	-- clean and then produced an EMPTY catalog without a single error: the validation said yes
+	-- and the build returned nothing, which is the worst failure shape there is. The two
+	-- functions must accept the same input or one of them lies.
+	--
+	-- (Contrast with the effects loop inside validate(), which uses ipairs on purpose: the order
+	-- of a definition's effects is meaningful. Here it is not — the result is a lookup by id.)
+	local catalog = {}
+	for _, definition in pairs(definitions) do
+		catalog[definition.id] = definition
+	end
+	return catalog, errors, warnings
 end
 
 -- Reads one definition out of the injected catalog. Returns nil rather than throwing, because a
@@ -444,6 +509,26 @@ function AbilityDefinition.logValidation(catalog)
 end
 
 return AbilityDefinition
+```
+
+### `src/shared/DefaultLoadout.luau`
+
+*slot -> ability id. Phase 8 replaces this table.*
+
+```lua
+--[[
+	DefaultLoadout.luau — which ability sits on which slot, by default.
+
+	Kept separate from the definitions on purpose: a definition should not know what key you
+	bound it to. Phase 8 replaces this table with whatever the inventory says is equipped, and
+	because the manager reads a loadout rather than a keyboard, that phase is a swap.
+]]
+return {
+	[1] = "FIREBALL",
+	[2] = "POISON",
+	[3] = "DASH",
+	[4] = "HEAL",
+}
 ```
 
 ### `src/shared/abilities/Fireball.luau`
@@ -546,48 +631,61 @@ return {
 
 ### `src/shared/abilities/init.luau`
 
-*The catalog. One of the few files allowed to require others.*
+*The catalog: a thin shell around the tested builder.*
 
 ```lua
 --[[
-	Catalog.luau — the registry the rest of the kit reads from.
+	init.luau — the ability catalog.
 
-	This is one of the very few files allowed to require others, because it exists precisely to
-	be the single place where "which abilities exist" is answered. Anywhere else, abilities
-	arrive injected. That keeps every other module loadable outside Studio, which is what the
-	test suite depends on.
+	Thin on purpose. Everything that can be tested lives in AbilityDefinition.buildCatalog; what
+	is left here is only the part that cannot be, because it needs Roblox: the requires.
+
+	The Config line is not decoration. validate() reports "init was never called" for every
+	definition when no config has been injected, and this file validates while it loads — that is,
+	before any other module has had the chance to call init. Without it every definition fails,
+	buildCatalog returns nil, and the game refuses to start over a config that was simply never
+	handed over. That was the bug: the framework made the config injectable, and then the one
+	place that validates at load time never injected it.
 ]]
-return {
+local AbilityDefinition = require(script.Parent.AbilityDefinition)
+local Config = require(script.Parent.Config)
+
+local definitions = {
 	require(script.Fireball),
 	require(script.Poison),
 	require(script.Dash),
 	require(script.Heal),
 }
-```
 
-### `src/shared/DefaultLoadout.luau`
+-- Must run before validation. The second argument is nil on purpose: the catalog is what we are
+-- about to build, and passing a previous one would hide a stale table behind a fresh one.
+AbilityDefinition.init(Config, nil)
 
-*Which ability sits on which slot. Phase 8 replaces this table.*
+local catalog, errors, warnings = AbilityDefinition.buildCatalog(definitions)
+for _, message in ipairs(warnings) do
+	warn(string.format("[ability-kit] %s", message))
+end
+if catalog == nil then
+	-- Refusing to start is the point: every later phase reads this table, so one wrong entry
+	-- here surfaces much later as a mysterious bug three modules away from its cause.
+	error(
+		string.format(
+			"[ability-kit] the ability catalog is invalid, refusing to start:\n  %s",
+			table.concat(errors, "\n  ")
+		),
+		0
+	)
+end
 
-```lua
---[[
-	DefaultLoadout.luau — which ability sits on which slot, by default.
+-- Register it, so get(id) answers from the moment this module is required.
+AbilityDefinition.init(Config, catalog)
 
-	Kept separate from the definitions on purpose: a definition should not know what key you
-	bound it to. Phase 8 replaces this table with whatever the inventory says is equipped, and
-	because the manager reads a loadout rather than a keyboard, that phase is a swap.
-]]
-return {
-	[1] = "FIREBALL",
-	[2] = "POISON",
-	[3] = "DASH",
-	[4] = "HEAL",
-}
+return catalog
 ```
 
 ### `tests/AbilityDefinitionSpec.luau`
 
-*24 cases, runnable with no Studio.*
+*32 cases, runnable with no Studio.*
 
 ```lua
 --[[
@@ -766,11 +864,31 @@ T("validating before init returns an error instead of crashing", function()
 	assert(#errors > 0 and table.concat(errors):find("init"), "should say init was never called")
 end)
 
-T("two abilities sharing an id are caught by the catalog check", function()
+T("two abilities sharing an id are caught on an ARRAY, the shape the catalog passes", function()
+	-- This is the case that was code dead: iterating an array yields numeric keys, which are
+	-- unique by construction, so keying the check on the table key could never collide.
 	local a, b = valid(), valid()
-	local catalog = { [1] = a, [2] = b }
-	local errors = AbilityDefinition.validateCatalog(catalog)
+	a.id, b.id = "SAME_ID", "SAME_ID"
+	AbilityDefinition.init(Config, {})
+	local errors = AbilityDefinition.validateCatalog({ a, b })
 	assert(#errors > 0, "a duplicate id makes the second ability unreachable forever")
+	assert(table.concat(errors):find("duplicate"), "the error must say what is wrong")
+	assert(table.concat(errors):find("SAME_ID"), "and name the id that is duplicated")
+end)
+
+T("two abilities sharing an id are caught on a DICT too", function()
+	local a, b = valid(), valid()
+	a.id, b.id = "SAME_ID", "SAME_ID"
+	AbilityDefinition.init(Config, {})
+	local errors = AbilityDefinition.validateCatalog({ FIRST = a, SECOND = b })
+	assert(#errors > 0, "the dict shape must be checked as well")
+end)
+
+T("a non-table entry is reported instead of crashing the catalog check", function()
+	AbilityDefinition.init(Config, {})
+	local errors = AbilityDefinition.validateCatalog({ valid(), "not a table" })
+	assert(#errors > 0, "a junk entry must be reported, not thrown")
+	assert(table.concat(errors):find("not a table"), "and it must say so in plain words")
 end)
 
 -- ===== warnings, not errors =====
@@ -805,6 +923,95 @@ T("get returns the definition it was given, and nil for anything else", function
 	assert(AbilityDefinition.get(nil) == nil, "a nil id must not throw")
 end)
 
+T(
+	"get works on the dict shape the catalog builds, and fails on the array it must not be",
+	function()
+		-- The contract the catalog has to honour. If it returned the array it collects, every
+		-- lookup would be nil and nothing would say why.
+		local fireball = require("../src/shared/abilities/Fireball")
+		local heal = require("../src/shared/abilities/Heal")
+
+		local asArray = { fireball, heal }
+		local asDict = {}
+		for _, definition in ipairs(asArray) do
+			asDict[definition.id] = definition
+		end
+
+		AbilityDefinition.init(Config, asDict)
+		assert(AbilityDefinition.get("FIREBALL") == fireball, "the dict must be keyed by id")
+
+		AbilityDefinition.init(Config, asArray)
+		assert(
+			AbilityDefinition.get("FIREBALL") == nil,
+			"an array cannot be looked up by id: this is the bug the dict shape exists to prevent"
+		)
+	end
+)
+
+T("a definition with no id is REPORTED, not a crash", function()
+	-- seen[definition.id] = true with a nil id is "table index is nil". The guard around the
+	-- message label did not cover the write, which is how this shipped.
+	AbilityDefinition.init(Config, {})
+	local ok, result = pcall(function()
+		return AbilityDefinition.validateCatalog({
+			{ displayName = "no id here", effects = { { kind = "damage", amount = 5 } } },
+		})
+	end)
+	assert(ok, "validateCatalog must survive an entry with no id, got: " .. tostring(result))
+	assert(#result > 0, "and it must report the missing id")
+	assert(table.concat(result):find("id"), "the error has to mention the id")
+end)
+
+T("buildCatalog reports a missing init instead of building a broken catalog", function()
+	-- Bug 3's test, and the reason the build lives here at all. The suite calls init() by hand
+	-- everywhere, which is exactly why it missed this: the real catalog validates during
+	-- require, before any other module has had the chance to call init.
+	AbilityDefinition.init(nil, nil)
+	local catalog, errors =
+		AbilityDefinition.buildCatalog({ require("../src/shared/abilities/Fireball") })
+	assert(catalog == nil, "an unusable catalog must come back as nil, not as a table")
+	assert(#errors > 0, "and the reason must be reported")
+	assert(table.concat(errors):find("init"), "specifically, that init was never called")
+	AbilityDefinition.init(Config, {})
+end)
+
+T("buildCatalog returns a dict keyed by id for a valid array", function()
+	local a, b = valid(), valid()
+	a.id, b.id = "ALPHA", "BETA"
+	AbilityDefinition.init(Config, {})
+	local catalog, errors = AbilityDefinition.buildCatalog({ a, b })
+	assert(#errors == 0, "a valid array must produce no errors")
+	assert(catalog.ALPHA == a and catalog.BETA == b, "and be keyed by definition.id")
+end)
+
+T("buildCatalog refuses to build at all when two ids collide", function()
+	-- The alternative — return the dict and let the second entry overwrite the first — is how
+	-- a duplicate becomes undetectable: after indexing, the evidence is gone.
+	local a, b = valid(), valid()
+	a.id, b.id = "TWICE", "TWICE"
+	AbilityDefinition.init(Config, {})
+	local catalog, errors = AbilityDefinition.buildCatalog({ a, b })
+	assert(catalog == nil, "a duplicate must produce no catalog at all")
+	assert(#errors > 0, "and say why")
+end)
+
+T("buildCatalog accepts the same input shapes validateCatalog does", function()
+	-- The contract has to match. With ipairs a dict validated clean and then built an EMPTY
+	-- catalog, with no error anywhere: validation said yes, the build returned nothing.
+	local a, b = valid(), valid()
+	a.id, b.id = "ALPHA", "BETA"
+	AbilityDefinition.init(Config, {})
+
+	local fromArray, arrayErrors = AbilityDefinition.buildCatalog({ a, b })
+	assert(#arrayErrors == 0, "an array must keep working")
+	assert(fromArray.ALPHA == a and fromArray.BETA == b, "and be keyed by id")
+
+	local fromDict, dictErrors = AbilityDefinition.buildCatalog({ FIRST = a, SECOND = b })
+	assert(#dictErrors == 0, "a dict is legal input, same as for validateCatalog")
+	assert(next(fromDict) ~= nil, "a dict must not silently produce an empty catalog")
+	assert(fromDict.ALPHA == a and fromDict.BETA == b, "and must be keyed by definition.id")
+end)
+
 return T.report()
 ```
 
@@ -813,18 +1020,46 @@ return T.report()
 Nothing here needs Studio. From the project folder:
 
 ```
-luau tests/run.luau          # 24 cases
-selene src/ tests/           # must be 0 errors, 0 warnings
-stylua --check src/ tests/   # must print nothing
+luau tests/run.luau          # 32 cases
+selene src/ tests/           # 0 errors, 0 warnings
+stylua --check src/ tests/   # prints nothing
 ```
 
-To see it in Studio, the plugin is already connected to this project: the tree lands under
-`ReplicatedStorage.AbilityKit`. There is nothing to click yet — phase 1 is data and rules —
-so the useful check is that the folders appear and `luau tests/run.luau` stays green.
+In Studio the tree lands under `ReplicatedStorage.AbilityKit` (verified: the catalog loads
+and `get("FIREBALL")` answers). There is nothing to click yet — this phase is data and
+rules.
+
+## What review found in this phase
+
+Four bugs were found by reading, not by running. They fall into **two shapes**, and every
+one of them passed the test suite first:
+
+| # | Bug | Shape |
+|---|-----|-------|
+| 1 | `validateCatalog` keyed duplicates on the table key, which on an array is 1, 2, 3… — unique by construction, so the check could never fire | a check that cannot fire |
+| 4 | `seen[definition.id] = true` with a nil id crashed, and the guard one line above protected the message, not the write | a guard that misses its own case |
+| 2 | The catalog returned an array; `get(id)` looked up by string, so it returned nil for every ability | a dependency never delivered |
+| 3 | The config became injectable, and the catalog — the one file that validates at load — never injected it, so the game refused to start | a dependency never delivered |
+
+The two middle rows are worth more than the fixes. **The test agreed with the bug**: it built
+`{ [1] = a, [2] = b }` — a table whose keys are already unique, which is the shape that
+worked, not the shape the catalog passes. Code and test shared one misreading, so they
+confirmed each other.
+
+The same held for the rest: the suite called `init()` by hand in every case, which is
+exactly what the real catalog cannot do. That is why the build now lives in a function —
+`buildCatalog` — instead of in the file that needs Roblox. **Untestable code shipped a
+missing dependency, so the fix was to make it testable, not to test it harder.**
 
 ## The numbers
 
-- Tests: **24**, in 1 suite, no Studio
-- Lines: **434 source + 308 tests** = 742
-- selene: 0 errors, 0 warnings
-- stylua: clean
+- Tests: **32**, in 1 suite, no Studio
+- Lines: **585 source + 419 tests** = 1004
+- Commits: **5** (scaffold, phase 1, and three rounds of review fixes)
+- selene: 0 errors, 0 warnings · stylua: clean
+
+## Still not verified
+
+No full game boot: there is no Bootstrap yet, so the catalog has only been loaded the way
+the boot will load it — by `require`, from the same data model. That path is verified; the
+boot itself arrives with the server phase.

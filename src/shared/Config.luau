@@ -59,6 +59,10 @@ Config.EFFECT_LIMITS = {
 	maxDuration = 30,
 	maxRadius = 200,
 	maxDashDistance = 200,
+	-- An instant, free ability that hits at least this hard is almost certainly a mistake.
+	-- Deliberately a warning and not an error: a framework informs, it does not decide for the
+	-- game. A stricter consumer can promote it, an experimental one can ignore it.
+	spammableDamageThreshold = 20,
 }
 
 -- Strings a PLAYER can see. Kept out of the modules on purpose: a framework should not decide
