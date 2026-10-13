@@ -61,6 +61,14 @@ local STATE_INTERVAL = 1 / 10
 
 local sessions = {} -- [player] = session
 
+print(
+	string.format(
+		"[ability-kit] bootstrap up: %d abilities in the catalog, %d equipped by default",
+		#Catalog,
+		Config.MAX_EQUIPPED
+	)
+)
+
 --[[
 	The unit a session's own systems read, built fresh each time from the live character.
 
@@ -113,6 +121,14 @@ end
 Players.PlayerAdded:Connect(function(player)
 	buildSession(player)
 end)
+
+-- And the players who are already here. A script connects PlayerAdded at the point it runs, and in
+-- Studio that point is reached AFTER the local player has joined — so the event never fires for them
+-- and they get no session: no state, no intents, nothing. This is not a Studio quirk to work around;
+-- the same thing happens to anyone already in a server when a script reloads.
+for _, player in ipairs(Players:GetPlayers()) do
+	buildSession(player)
+end
 
 Players.PlayerRemoving:Connect(function(player)
 	local session = sessions[player]
