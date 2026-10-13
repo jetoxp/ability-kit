@@ -62,7 +62,7 @@ T("with several in line, the one nearest the impact point wins", function()
 	)
 end)
 
-T("a candidate at the ray's own origin is not special-cased here", function()
+T("the resolver makes no exception for any candidate, including the caster", function()
 	-- Pinned deliberately, in the direction that looks wrong: a lone candidate sitting exactly on the
 	-- origin IS selected, because this module has no idea the origin is somebody's root.
 	--

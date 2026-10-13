@@ -85,6 +85,25 @@ something asks for it by name.**
 Both are stated here rather than left implicit because the first ability that needs an AoE would
 otherwise invent the rule on its own, and this project has seen how that ends.
 
+**Consequence worth stating:** under this division the resolver receives the caster as an ordinary
+candidate and selects it if it is the best one — which happens exactly when the adapter failed to
+filter. That is why the adapter's filter is not an optimisation: it is the rule's only enforcement
+point.
+
+**The spec case that pins this side of the rule, and the only one that can exist.** It asserts the
+*absence* of a behaviour, which is all the resolver's side can be:
+
+```lua
+T("the resolver makes no exception for any candidate, including the caster")
+-- candidates = { one sitting on the ray's origin, one further along }
+-- radius == 0 -> the one along the ray, whoever is standing on the origin
+-- and alone, the one on the origin IS selected: no hidden filter lives here
+```
+
+It is a test of "nothing odd happens", and it is written down as such rather than left as a feeling.
+**If somebody ever wants defence in depth — the resolver excluding the caster too — that is the moment
+to add a `caster` parameter to the signature**, and this case is the one that will fail and say why.
+
 ### D5. Which effects follow the resolved target
 
 For an ability with `targeting = "raycast"`:
@@ -153,11 +172,7 @@ shot reaches, so it becomes load-bearing and the validator owes it a rule: **a n
 present, with a ceiling of `maxRange = 500` in `EFFECT_LIMITS` alongside the others** — a concrete
 number, because a placeholder is a debt rather than a rule.
 
-**Consequence worth stating:** under this division the resolver receives the caster as an ordinary
-candidate and selects it if it is the best one — which happens exactly when the adapter failed to
-filter. That is why the adapter's filter is not an optimisation: it is the rule's only enforcement
-point, and a spec case pins the resolver's side of it so nobody moves the rule by accident. `AbilityDefinitionSpec`
-grows its cases with them.
+`AbilityDefinitionSpec` grows its cases with them.
 
 ## The seam, made explicit
 
@@ -198,6 +213,12 @@ for _, effect in ipairs(firing.effects) do
 end
 ```
 
+**For `targeting == "self"`, `resolved = { caster}` and the same loop runs.** The resolver is not
+called — there is nothing to resolve — but the shape of the data does not change, so the pre-split
+above never needs to know which targeting the ability had. One shape, one loop, and no branch on
+targeting in the heartbeat. The alternative, branching in the Bootstrap, would put a copy of the
+targeting rules in the file that is supposed to know nothing about them.
+
 **The non-offensive loop is outside the target loop on purpose.** A raycast ability that buffs
 itself while hitting three enemies produces **one** buff event, not three. The nested version would be
 a buff stacked by the number of people standing in front of you, which is a bug that looks like a
@@ -206,9 +227,19 @@ feature until somebody reads the numbers.
 `EffectSystem` stays unchanged, which the phase asked for; if a second reason to split appears in
 phase 7, this is the place to promote it to the effect system knowing about both targets.
 
-**The aimed-kinds list is declared once**, in `TargetResolver.OFFENSIVE_KINDS`, and read by three
-places: the validator, the pre-split above, and the resolver's own selection. Three copies of a list
-of three strings is the drift D7 already kills for the enum, so it gets the same treatment.
+**The aimed-kinds list is declared once**, in `TargetResolver.OFFENSIVE_KINDS`, and it is read
+through one function:
+
+```lua
+TargetResolver.OFFENSIVE_KINDS = { "damage", "dot", "debuff" }   -- the list
+function TargetResolver.isOffensive(kind) -> boolean             -- the only way in
+```
+
+**Three readers — the validator, the pre-split above, and the resolver's own selection — all call
+`isOffensive`, and none of them walks the list.** The list stays reachable as a field and the spec
+asserts its contents, but a reader that iterates it is writing its own membership test: that is how a
+fourth copy of a rule gets written by somebody who did not know the function existed. Same treatment
+D7 gives the enum, for the same reason.
 
 `TargetResolver` is testable in a terminal with tables, which is why the decision about what counts
 as a candidate lives there and not in the raycast code.
