@@ -30,7 +30,9 @@ function Net.configure(config)
 end
 
 --[[
-	Checks a client's payload and returns (ok, intentOrReason).
+	Checks a client's payload and returns (ok, value): on success `value` is the normalised intent,
+	and on failure it is the reason string that goes to the log. Two different things in one slot,
+	which is a shape worth naming rather than leaving to be inferred.
 
 	This is the whole of the client-facing trust boundary, and it is deliberately dull: an action
 	from a known list, and a slot within range. Anything else is refused, including a payload that
@@ -60,8 +62,13 @@ function Net.validateIntent(payload)
 		return false, string.format("unknown action '%s'", tostring(payload.action))
 	end
 
+	-- An integer, not merely a number. `1.5` would pass a range check and then find no ability, which
+	-- is a silent no-op where a refusal belongs: the boundary is cheaper to tighten than to explain.
 	if type(payload.slot) ~= "number" or payload.slot ~= payload.slot then
 		return false, "slot must be a number"
+	end
+	if payload.slot ~= math.floor(payload.slot) then
+		return false, string.format("slot %s is not a slot", tostring(payload.slot))
 	end
 	if payload.slot < 1 or (Net.MAX_SLOT ~= nil and payload.slot > Net.MAX_SLOT) then
 		return false, string.format("slot %s is out of range", tostring(payload.slot))

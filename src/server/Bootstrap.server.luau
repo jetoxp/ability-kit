@@ -90,6 +90,31 @@ local function ownerProxy(session, player)
 	}
 end
 
+--[[
+	Death and respawn.
+
+	Three functions were written and tested for this and none of them was ever called: reset() clears
+	cooldowns and casts, refill() takes the pools back to full, clear() drops the effects. Without
+	this connection a player who dies mid-cast keeps the cooldown, the spent mana and the poison on
+	their corpse, and comes back with all three.
+]]
+local function onCharacterAdded(player, character)
+	local session = sessions[player]
+	if session == nil then
+		return
+	end
+
+	local previous = session.lastCharacter
+	if previous ~= nil and previous ~= character then
+		session.effects:clear(previous)
+	end
+	session.lastCharacter = character
+
+	session.manager:reset()
+	session.resources:refill()
+	session.effects:clear(character)
+end
+
 local function buildSession(player)
 	local adapter = EffectAdapter.new(Config)
 	local session = {
@@ -98,8 +123,17 @@ local function buildSession(player)
 		effects = EffectSystem.new(Config),
 		adapter = adapter,
 		stateClock = 0,
+		lastCharacter = nil,
 	}
 	sessions[player] = session
+
+	player.CharacterAdded:Connect(function(character)
+		onCharacterAdded(player, character)
+	end)
+	if player.Character ~= nil then
+		onCharacterAdded(player, player.Character)
+	end
+
 	return session
 end
 
@@ -135,7 +169,13 @@ Players.PlayerRemoving:Connect(function(player)
 	if session ~= nil then
 		-- Nothing to save: this kit persists no state. What there is to do is let go of it, so a
 		-- session cannot outlive the player it belongs to.
-		session.effects:clear(player)
+		--
+		-- The effects are keyed by the CHARACTER, which is the id describe() gives them, so
+		-- clear(player) removed nothing. This clears the one that exists.
+		local character = player.Character
+		if character ~= nil then
+			session.effects:clear(character)
+		end
 		sessions[player] = nil
 	end
 end)
@@ -174,6 +214,13 @@ intentRemote.OnServerEvent:Connect(function(player, payload)
 
 	-- Only now does anything move. The check above cannot have passed and this fail, because both
 	-- read the same table in the same frame.
+	--
+	-- The cost is paid at the COMMIT POINT, which is the activation and not the firing. That makes
+	-- an interrupted cast a paid-for cast: a Fireball interrupted at 0.3s of 0.4s has spent the
+	-- mana and produced nothing. This is deliberate — the alternative is a refund path, which means
+	-- the server tracks what each cast has paid and reconciles it on every interrupt, cancel and
+	-- disconnect. A game that wants the forgiving version calls `resources:restore` on the ability's
+	-- cost when it cancels, which is the reason that function exists.
 	session.resources:spend(ability:getCost())
 end)
 
@@ -193,6 +240,12 @@ RunService.Heartbeat:Connect(function(dt)
 
 		for _, firing in ipairs(session.manager:advance(dt)) do
 			if unit ~= nil then
+				-- KNOWN LIMITATION: target = source. Every ability is self-cast, because the intent
+				-- carries no target and nothing here resolves one. Fireball, whose definition says
+				-- "a single target" with range 60, therefore burns its caster. Target selection is
+				-- a later phase: a raycast from the caster's CFrame, or a client-supplied reference
+				-- the server validates. Giving the client the choice without validating it is the one
+				-- version of this that is not an option.
 				local events = session.effects:applyFiring(firing, {
 					source = unit,
 					target = unit,
@@ -214,8 +267,15 @@ RunService.Heartbeat:Connect(function(dt)
 
 		session.stateClock = session.stateClock + dt
 		if session.stateClock >= STATE_INTERVAL then
-			session.stateClock = 0
-			stateRemote:FireClient(player, snapshot(session))
+			-- Subtract rather than zero: the overshoot belongs to the next interval. Zeroing it
+			-- loses time on every send, which is the same "time that goes missing" shape this kit
+			-- has already met twice — in the cooldown and in the DoT.
+			session.stateClock -= STATE_INTERVAL
+			if player.Parent ~= nil then
+				-- A player can leave between the heartbeat starting and this line. Firing at a
+				-- departed player is silent, but checking costs one comparison.
+				stateRemote:FireClient(player, snapshot(session))
+			end
 		end
 	end
 end)

@@ -48,6 +48,13 @@ T("a non-numeric slot is refused", function()
 	assert(not Net.validateIntent({ action = "activate", slot = nil }), "no slot at all")
 end)
 
+T("a fractional slot is refused rather than silently finding nothing", function()
+	-- 1.5 passes a range check and then getAbility(1.5) is nil: a no-op where a refusal belongs.
+	local ok, reason = Net.validateIntent({ action = "activate", slot = 1.5 })
+	assert(not ok, "half a slot is not a slot")
+	assert(reason:find("1.5"), "and the log should name it, got " .. tostring(reason))
+end)
+
 T("an extra field is refused, which is how a future exploit is kept from becoming one", function()
 	local ok, reason = Net.validateIntent({ action = "activate", slot = 1, damage = 9999 })
 	assert(not ok, "the client does not get to add fields")
