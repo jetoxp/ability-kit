@@ -284,6 +284,11 @@ RunService.Heartbeat:Connect(function(dt)
 				local direction = session.adapter.directionOf(owner.character)
 				local definition = AbilityDefinition.get(firing.id)
 				local targeting = definition and definition.targeting or "self"
+				-- The effects come from the DEFINITION, not from the firing: a firing carries what
+				-- happened (id, slot), and it was applyFiring that used to look them up. Reading
+				-- firing.effects here produced empty loops and a shot that spent mana and did
+				-- nothing -- found by the engine run, not by the suite.
+				local effects = definition and definition.effects or {}
 
 				-- THE ONE BRANCH. It lives here, in the resolution step, and the loops below never
 				-- see it: they receive a list and do not know where it came from. For "self" the
@@ -324,7 +329,7 @@ RunService.Heartbeat:Connect(function(dt)
 				if resolved ~= nil then
 					-- Offensive effects, once per resolved target.
 					for _, target in ipairs(resolved) do
-						for _, effect in ipairs(firing.effects or {}) do
+						for _, effect in ipairs(effects) do
 							if TargetResolver.isOffensive(effect.kind) then
 								local events = session.effects:applyEffect(effect, firing.id, {
 									source = unit,
@@ -340,7 +345,7 @@ RunService.Heartbeat:Connect(function(dt)
 
 					-- Everything else, to the caster, ONCE -- outside the target loop, or a buff
 					-- would stack by the number of people standing in front of you.
-					for _, effect in ipairs(firing.effects or {}) do
+					for _, effect in ipairs(effects) do
 						if not TargetResolver.isOffensive(effect.kind) then
 							local events = session.effects:applyEffect(effect, firing.id, {
 								source = unit,
