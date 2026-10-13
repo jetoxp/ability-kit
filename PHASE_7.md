@@ -34,7 +34,15 @@ times a second visibly steps, so the renderer interpolates **between the last tw
 time since the last one arrived.
 
 The presenter is given that elapsed time as an input and produces the interpolated figure; it never reads
-a clock. **The client never extends a cooldown, shortens one, or decides an ability is ready on its own.**
+a clock.
+
+**Interpolation, not extrapolation, and the difference is the whole point.** The figure drawn is a value
+*between the two snapshots*, never beyond the last one: at the end of an interval it equals what the
+server last said, and it cannot jump ahead of it. Extrapolation — extending the last value forward from
+the last one received — would reach zero on its own, early, on any long frame, and would then need a
+special case for "the client thinks it is ready but the server disagrees". **Interpolation lags up to
+one interval behind and is therefore never wrong; extrapolation is smooth and occasionally lies.** The
+100 ms of lag is the price of never having to be trusted. **The client never extends a cooldown, shortens one, or decides an ability is ready on its own.**
 If the server says 1.4, the client draws a value between 1.4 and the next one it receives — never less
 than zero, and it never concludes "ready" before the server does. The snapshot is the authority; the
 interpolation is presentation.
@@ -93,6 +101,13 @@ Phase 5 left a note: `changed` is created by the client script, so a module requ
 earlier in the load order sees `nil`. The HUD is the first consumer that note was written for, and it
 makes the order concrete: **the client script requires `ClientState`, creates the event, and then
 requires the HUD** — or the HUD guards. The note stops being a note and becomes a call site.
+
+**And the HUD is the reason `ClientState` grows from one snapshot to two.** D2 interpolates between the
+previous and the latest, and somebody has to keep the pair; the alternative is the presenter holding
+history, which would break the property that makes it testable ("snapshot in, description out"). So the
+duplicated state lives next to the state: `ClientState.previous` and `ClientState.latest`, written in
+the same `set()` that already existed. **Interpolation is between them, never against a clock.**
+
 
 ## How this phase closes
 
