@@ -167,6 +167,11 @@ function Ability:startActivation()
 		self.castRemaining = 0
 	end
 	self.effectsEmitted = false
+	-- Defensive: advance() and reset() both leave this at zero, so today it is always zero here.
+	-- Written anyway because the failure it prevents is the mirror of the one that was just fixed:
+	-- a stale overshoot would be credited to the NEXT firing and shorten a cooldown by time that
+	-- never passed. Unreachable is not the same as impossible.
+	self.castOvershoot = 0
 	return true
 end
 

@@ -367,4 +367,16 @@ T("startActivation twice does nothing the second time", function()
 	assert(a:getState() == Ability.STATES.active, "and the state must be untouched")
 end)
 
+T(
+	"startActivation clears a leftover overshoot instead of carrying it into the next firing",
+	function()
+		-- White-box on purpose: the state is unreachable through the public surface today, and the
+		-- point of the case is that it stays harmless if that ever stops being true.
+		local a = newAbility(slow())
+		a.castOvershoot = 5
+		a:startActivation()
+		assert(a.castOvershoot == 0, "a stale overshoot must not survive into a new activation")
+	end
+)
+
 return T.report()
