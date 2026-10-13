@@ -185,7 +185,7 @@ logs nothing, because a line per shot is a log nobody reads.
 **A promise about the seam that nobody executes is indistinguishable from a promise nobody wrote.** The
 documentation had said "the adapter converts" since the effects layer was written. The adapter handed the
 pure resolver a `Vector3` where it expected `{ x, y, z }`, the resolver rejected every candidate it was
-given, and the shot resolved to nobody — with a green suite of 200 cases, because the suite is written
+given, and the shot resolved to nobody — with a green suite of 208 cases, because the suite is written
 against the contract and therefore cannot catch the boundary failing to honour it.
 
 **A Heartbeat connection that errors is disconnected, and a disconnected Heartbeat is a game that spends
