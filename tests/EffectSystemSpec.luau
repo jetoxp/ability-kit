@@ -296,4 +296,74 @@ T("getActiveFor reports what a client would need, and only that", function()
 	assert(info.target == nil, "and not the target object itself")
 end)
 
+T("a dt longer than the whole duration cannot deal more ticks than the duration allows", function()
+	-- The case the suite never crossed: every DoT case ran with dt smaller than remaining, which is
+	-- exactly the gap. A 2s/1s effect owes two ticks, and a 5-second frame must not mint five.
+	local system = EffectSystem.new(Config)
+	apply(system, { dot(6, 2, 1) }, "POISON", dummy())
+	local events = system:advance(5)
+	local ticks = 0
+	for _, event in ipairs(events) do
+		if event.kind == "damage" then
+			ticks += 1
+		end
+	end
+	assert(ticks == 2, "a 2s effect with a 1s interval owes 2 ticks, dealt " .. ticks)
+end)
+
+T("a huge dt on a long DoT still stops at the duration", function()
+	local system = EffectSystem.new(Config)
+	apply(system, { dot(6, 4, 1) }, "POISON", dummy())
+	local events = system:advance(1000)
+	local ticks = 0
+	for _, event in ipairs(events) do
+		if event.kind == "damage" then
+			ticks += 1
+		end
+	end
+	assert(ticks == 4, "4 seconds at 1s interval is 4 ticks, dealt " .. ticks)
+end)
+
+T("the normal catch-up still works when dt is shorter than the duration", function()
+	-- The cap must not break the case it was added alongside: 3.5s of a 4s effect is still 3 ticks.
+	local system = EffectSystem.new(Config)
+	apply(system, { dot(6, 4, 1) }, "POISON", dummy())
+	local events = system:advance(3.5)
+	local ticks = 0
+	for _, event in ipairs(events) do
+		if event.kind == "damage" then
+			ticks += 1
+		end
+	end
+	assert(ticks == 3, "3.5s at a 1s interval is 3 ticks, dealt " .. ticks)
+end)
+
+T("refreshing a DoT emits NOTHING, and extends the duration silently", function()
+	-- It used to emit a damage event with amount = nil, which the adapter turns into
+	-- TakeDamage(nil). The Studio check missed it because it never refreshed a DoT.
+	local system = EffectSystem.new(Config)
+	apply(system, { dot(6, 4, 1) }, "POISON", dummy())
+	system:advance(0.5)
+	local events = apply(system, { dot(6, 4, 1) }, "POISON", dummy())
+	assert(#events == 0, "a refresh has nothing to report, got " .. #events)
+
+	local active = system:getActiveFor("DUMMY")
+	assert(#active == 1, "and must not leave two instances")
+	assert(active[1].remaining > 3.9, "with the duration back at full")
+end)
+
+T("a dead target stops receiving ticks", function()
+	-- The registration guard stopped a corpse being poisoned. This is the other half: a target that
+	-- dies with effects running must stop producing damage for them.
+	local system = EffectSystem.new(Config)
+	local victim = dummy()
+	apply(system, { dot(6, 4, 1) }, "POISON", victim)
+	system:advance(0.5)
+	victim.alive = false
+	local events = system:advance(1.5)
+	for _, event in ipairs(events) do
+		assert(event.kind ~= "damage", "a dead target must not be dealt damage")
+	end
+end)
+
 return T.report()

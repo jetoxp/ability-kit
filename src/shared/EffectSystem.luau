@@ -157,9 +157,16 @@ function EffectSystem:applyEffect(effect, abilityId, context)
 		if effect.multiplier ~= nil then
 			existing.multiplier = effect.multiplier
 		end
+		-- A refreshed DoT emits nothing. Its damage comes from the ticks, and there is no amount to
+		-- hand over here: this used to emit a `damage` event with amount = nil, which reaches the
+		-- adapter as TakeDamage(nil) and crashes in Roblox. The duration extension is the whole
+		-- effect of a refresh, and the next tick arrives through advance.
+		if effect.kind == "dot" then
+			return events
+		end
+
 		table.insert(events, {
-			kind = effect.kind == "dot" and "damage"
-				or (effect.kind == "debuff" and "debuff" or "buff"),
+			kind = effect.kind == "debuff" and "debuff" or "buff",
 			target = target,
 			stat = effect.stat,
 			multiplier = existing.multiplier,
@@ -178,6 +185,9 @@ function EffectSystem:applyEffect(effect, abilityId, context)
 		-- Held so advance can name the target of a tick without a reverse lookup.
 		target = target,
 		kind = effect.kind,
+		-- The declared duration, kept as well as `remaining`: the tick cap is derived from it, and
+		-- deriving it from a value that drains would cap the total at zero on the first tick.
+		duration = effect.duration,
 		stat = effect.stat,
 		amount = effect.amount,
 		multiplier = effect.multiplier,
@@ -245,11 +255,25 @@ function EffectSystem:advance(dt)
 			-- The tick is resolved BEFORE the duration is drained. Draining first loses the final
 			-- bite whenever it coincides with the expiry: a 6-damage-per-second effect lasting two
 			-- seconds owes two ticks, and would have dealt one.
-			if instance.kind == "dot" then
+			if instance.kind == "dot" and isAlive(instance.target) then
 				instance.timeToTick = instance.timeToTick - dt
 				-- A while, not an if: a long tick must not swallow a tick of damage. Losing one on a
 				-- lag spike is the phantom-timer bug with hit points instead of seconds.
-				while instance.timeToTick <= 0 and instance.remaining > 0 do
+				--
+				-- But the catch-up window is BOUNDED by what the effect has left. Without that, one
+				-- long dt drained a whole duration at once: a 2s/1s effect asked to advance 5 seconds
+				-- dealt five ticks in a single frame, while the comment above promised two. The cap
+				-- is computed from `remaining` BEFORE the drain below, which is the window that
+				-- actually exists. The interval is floored away from zero so a bad definition cannot
+				-- divide by it.
+				local interval = math.max(instance.interval or 1, 0.001)
+				-- The cap is the total the DURATION allows, not the ticks that fit in the window.
+				-- A window cap of floor(remaining/interval) is a tick too tight: with 0.99s left on
+				-- a 1s interval it is 0, which blocks a tick that fell due legitimately one frame
+				-- before the expiry. Counting from the start cannot drift, because the schedule is
+				-- fixed and the count is not.
+				local maxTicks = math.floor((instance.duration or 0) / interval)
+				while instance.timeToTick <= 0 and (instance.ticksDealt or 0) < maxTicks do
 					table.insert(events, {
 						kind = "damage",
 						target = instance.target,
@@ -257,7 +281,8 @@ function EffectSystem:advance(dt)
 						dot = true,
 						abilityId = instance.abilityId,
 					})
-					instance.timeToTick = instance.timeToTick + (instance.interval or 1)
+					instance.timeToTick = instance.timeToTick + interval
+					instance.ticksDealt = (instance.ticksDealt or 0) + 1
 				end
 			end
 
