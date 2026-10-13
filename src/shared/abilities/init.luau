@@ -13,6 +13,7 @@
 ]]
 local AbilityDefinition = require(script.Parent.AbilityDefinition)
 local Config = require(script.Parent.Config)
+local EffectSystem = require(script.Parent.EffectSystem)
 
 local definitions = {
 	require(script.Fireball),
@@ -23,7 +24,7 @@ local definitions = {
 
 -- Must run before validation. The second argument is nil on purpose: the catalog is what we are
 -- about to build, and passing a previous one would hide a stale table behind a fresh one.
-AbilityDefinition.init(Config, nil)
+AbilityDefinition.init(Config, nil, EffectSystem)
 
 local catalog, errors, warnings = AbilityDefinition.buildCatalog(definitions)
 for _, message in ipairs(warnings) do
@@ -42,6 +43,6 @@ if catalog == nil then
 end
 
 -- Register it, so get(id) answers from the moment this module is required.
-AbilityDefinition.init(Config, catalog)
+AbilityDefinition.init(Config, catalog, EffectSystem)
 
 return catalog

@@ -9,6 +9,7 @@ local TestKit = require("./TestKit")
 -- concatenated path, which is why the four abilities are listed out below instead of looped.
 local AbilityDefinition = require("../src/shared/AbilityDefinition")
 local Config = require("../src/shared/Config")
+local EffectSystem = require("../src/shared/EffectSystem")
 
 local T = TestKit.new("AbilityDefinition")
 
@@ -422,6 +423,36 @@ T("an empty catalog warns instead of loading a kit that does nothing", function(
 	local catalog, buildErrors = AbilityDefinition.buildCatalog({})
 	assert(catalog ~= nil, "the build must still succeed: it is a warning, not a veto")
 	assert(#buildErrors == 0, "a warning must never turn into a build failure")
+end)
+
+T("a valid stack policy is accepted, and an unknown one is an error", function()
+	-- With the EffectSystem injected, a typo is caught at load instead of falling back to the
+	-- default in silence — which is how a designer ends up with stacking they did not ask for.
+	local def = valid()
+	def.effects =
+		{ { kind = "buff", stat = "speed", multiplier = 1.5, duration = 5, stack = "stack" } }
+	AbilityDefinition.init(Config, {}, EffectSystem)
+	local errors = AbilityDefinition.validate(def)
+	assert(#errors == 0, "a declared policy must be legal, got: " .. table.concat(errors, " | "))
+
+	def.effects =
+		{ { kind = "buff", stat = "speed", multiplier = 1.5, duration = 5, stack = "refrsh" } }
+	local badErrors = AbilityDefinition.validate(def)
+	assert(#badErrors > 0, "a typo in the policy must be reported")
+	assert(table.concat(badErrors):find("refrsh"), "naming the value that was wrong")
+	AbilityDefinition.init(Config, {}, nil)
+end)
+
+T("stack on an instant effect is reported as an unknown field", function()
+	-- There is nothing to stack on a one-off hit, so it is a field in the wrong place rather than a
+	-- special case to argue about.
+	local def = valid()
+	def.effects = { { kind = "damage", amount = 10, stack = "stack" } }
+	AbilityDefinition.init(Config, {}, EffectSystem)
+	local errors, warnings = AbilityDefinition.validate(def)
+	assert(#errors == 0, "it still runs, so it is not an error")
+	assert(table.concat(warnings):find("stack"), "but it must be reported")
+	AbilityDefinition.init(Config, {}, nil)
 end)
 
 return T.report()

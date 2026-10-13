@@ -13,6 +13,8 @@
 -- No requires at the top, on purpose. This module must load in a plain Luau interpreter
 -- where `script` does not exist, and that is only possible if nothing here reaches outside
 -- for its dependencies. Everything it needs arrives through init().
+local EffectSystem = nil -- injected through init, like the catalog and the config
+
 local AbilityDefinition = {}
 
 -- The vocabulary of the framework. Abilities compose these; they never invent a new one.
@@ -46,10 +48,10 @@ AbilityDefinition.ROOT_FIELDS = {
 -- that field belongs here, or the validator is describing a shape the code does not use.
 AbilityDefinition.EFFECT_FIELDS = {
 	damage = { "kind", "amount", "radius" },
-	dot = { "kind", "amount", "duration", "interval" },
+	dot = { "kind", "amount", "duration", "interval", "stack" },
 	heal = { "kind", "amount", "radius" },
-	buff = { "kind", "stat", "multiplier", "duration" },
-	debuff = { "kind", "stat", "multiplier", "duration" },
+	buff = { "kind", "stat", "multiplier", "duration", "stack" },
+	debuff = { "kind", "stat", "multiplier", "duration", "stack" },
 	dash = { "kind", "distance", "duration" },
 }
 
@@ -58,9 +60,11 @@ AbilityDefinition.CONFIG = nil
 
 -- Called once at startup. The config is injected rather than required so that a test can hand
 -- this module any limits it wants to exercise, including ones no shipped config would use.
-function AbilityDefinition.init(config, catalog)
+function AbilityDefinition.init(config, catalog, effectSystem)
 	AbilityDefinition.CONFIG = config
 	AbilityDefinition.CATALOG = catalog
+	-- Optional: without it, `stack` values go unchecked rather than checked against a copy.
+	EffectSystem = effectSystem
 end
 
 local function config()
@@ -314,6 +318,37 @@ function AbilityDefinition.validate(definition)
 							"%s.distance (%d) is beyond the sanity limit",
 							where,
 							effect.distance
+						)
+					)
+				end
+			end
+		end
+	end
+
+	-- `stack` is only meaningful on what lives over time, and only with a value the EffectSystem
+	-- knows. On an instant effect, where there is nothing to stack, the whitelist reports it as an
+	-- unknown field, which is the right answer rather than a special case here.
+	if EffectSystem ~= nil and type(definition.effects) == "table" then
+		for index, effect in ipairs(definition.effects) do
+			local where = string.format("effects[%d]", index)
+			local timed = type(effect) == "table"
+				and (effect.kind == "dot" or effect.kind == "buff" or effect.kind == "debuff")
+			if timed and effect.stack ~= nil then
+				local known = false
+				for _, policy in ipairs(EffectSystem.STACKING) do
+					if effect.stack == policy then
+						known = true
+						break
+					end
+				end
+				if not known then
+					table.insert(
+						errors,
+						string.format(
+							"%s.stack '%s' is not one of: %s",
+							where,
+							tostring(effect.stack),
+							table.concat(EffectSystem.STACKING, ", ")
 						)
 					)
 				end
