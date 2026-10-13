@@ -10,6 +10,7 @@ return {
 	cost = { mana = 25 },
 	cooldown = 3,
 	castTime = 0.4,
+	targeting = "raycast",
 	range = 60,
 	effects = {
 		{ kind = "damage", amount = 45, radius = 0 },

@@ -11,6 +11,7 @@ return {
 	cost = { mana = 20 },
 	cooldown = 6,
 	castTime = 0,
+	targeting = "raycast",
 	range = 40,
 	effects = {
 		{ kind = "dot", amount = 6, duration = 4, interval = 1 },

@@ -8,6 +8,7 @@ local TestKit = require("./TestKit")
 -- Paths must be literal strings: the Luau CLI's require-by-string cannot resolve a
 -- concatenated path, which is why the four abilities are listed out below instead of looped.
 local AbilityDefinition = require("../src/shared/AbilityDefinition")
+local TargetResolver = require("../src/shared/TargetResolver")
 local Config = require("../src/shared/Config")
 local EffectSystem = require("../src/shared/EffectSystem")
 
@@ -24,12 +25,17 @@ local function valid()
 		cooldown = 1,
 		castTime = 0,
 		range = 30,
+		-- Declared, not omitted: this fixture carries damage, and an omitted field means self, which
+		-- with damage is exactly the contradiction the mirror rule refuses.
+		targeting = "raycast",
 		effects = { { kind = "damage", amount = 10, radius = 0 } },
 	}
 end
 
 local function validate(def)
-	AbilityDefinition.init(Config, {})
+	-- The third injection. With it, `targeting` is checked against its vocabulary; without it the
+	-- check is skipped, the same way `stack` is skipped without an EffectSystem.
+	AbilityDefinition.init(Config, {}, nil, TargetResolver)
 	return AbilityDefinition.validate(def)
 end
 
@@ -379,6 +385,10 @@ end)
 
 T("dash.duration is validated, because Dash.luau uses it", function()
 	local def = valid()
+	-- Dash is self-targeting and carries no offensive effect. Without saying so, this fixture is the
+	-- raycast one, and a raycast with nothing offensive is the mirror contradiction - which is the
+	-- rule working rather than the test being unreasonable.
+	def.targeting = "self"
 	def.effects = { { kind = "dash", distance = 32, duration = -1 } }
 	assert(#validate(def) > 0, "a negative duration is a mistake")
 
@@ -453,6 +463,87 @@ T("stack on an instant effect is reported as an unknown field", function()
 	assert(#errors == 0, "it still runs, so it is not an error")
 	assert(table.concat(warnings):find("stack"), "but it must be reported")
 	AbilityDefinition.init(Config, {}, nil)
+end)
+
+-- ===== targeting: the field, and the two mirror rules (phase 6) =====
+
+T("an unknown targeting value is an error, not a fallback to self", function()
+	local d = valid()
+	d.targeting = "raycst"
+	local errors = validate(d)
+	assert(#errors == 1, "one error, got " .. #errors .. ": " .. table.concat(errors, " | "))
+	assert(errors[1]:find("raycst"), "and it names the value, got: " .. errors[1])
+end)
+
+T("a self ability with an offensive effect is refused, and the message names the kind", function()
+	local d = valid()
+	d.targeting = "self"
+	local errors = validate(d)
+	assert(#errors == 1, "one error, got " .. #errors)
+	assert(errors[1]:find("damage"), "names the kind: " .. errors[1])
+	assert(errors[1]:find("needs its own name"), "and says what to do about it")
+end)
+
+T("every offensive kind is refused under self, not just damage", function()
+	for _, kind in ipairs({ "damage", "dot", "debuff" }) do
+		local d = valid()
+		d.targeting = "self"
+		d.effects = {
+			{
+				kind = kind,
+				amount = 5,
+				duration = 2,
+				interval = 1,
+				stat = "speed",
+				multiplier = 0.5,
+			},
+		}
+		local errors = validate(d)
+		assert(#errors >= 1, kind .. " under self must be refused")
+		assert(errors[1]:find(kind), "and the first error names " .. kind .. ": " .. errors[1])
+	end
+end)
+
+T("a raycast ability with nothing offensive is refused: the ray is decorative", function()
+	local d = valid()
+	d.targeting = "raycast"
+	d.effects = { { kind = "heal", amount = 10, radius = 0 } }
+	local errors = validate(d)
+	assert(#errors == 1, "one error, got " .. #errors)
+	assert(errors[1]:find("decorative"), "names the reason: " .. errors[1])
+end)
+
+T("both halves pass when they agree, which is the point of the pair", function()
+	local raycast = valid()
+	raycast.targeting = "raycast"
+	assert(#validate(raycast) == 0, "a raycast with damage is coherent")
+
+	local propio = valid()
+	propio.targeting = "self"
+	propio.effects = { { kind = "heal", amount = 10, radius = 0 } }
+	assert(#validate(propio) == 0, "a self with heal is coherent")
+end)
+
+T("omitting targeting means self, and that default is not a loophole", function()
+	local d = valid()
+	d.targeting = nil
+	assert(#validate(d) == 1, "damage with no targeting is a self+offensive contradiction")
+
+	local seguro = valid()
+	seguro.targeting = nil
+	seguro.effects = { { kind = "heal", amount = 10, radius = 0 } }
+	assert(
+		#validate(seguro) == 0,
+		"and a non-offensive one is fine, which is what the default is for"
+	)
+end)
+
+T("a range over the ceiling from Config is caught", function()
+	local d = valid()
+	d.range = Config.EFFECT_LIMITS.maxRange + 1
+	local errors = validate(d)
+	assert(#errors == 1, "over the ceiling, got " .. #errors)
+	assert(errors[1]:find("sanity"), "and it says which kind of limit: " .. errors[1])
 end)
 
 return T.report()

@@ -10,6 +10,7 @@ return {
 	cost = { mana = 40 },
 	cooldown = 8,
 	castTime = 1.2,
+	targeting = "self",
 	range = 0,
 	effects = {
 		{ kind = "heal", amount = 45 },

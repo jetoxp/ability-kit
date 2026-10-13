@@ -11,6 +11,7 @@ return {
 	cost = { stamina = 30 },
 	cooldown = 5,
 	castTime = 0,
+	targeting = "self",
 	range = 0,
 	effects = {
 		{ kind = "dash", distance = 32, duration = 0.25 },

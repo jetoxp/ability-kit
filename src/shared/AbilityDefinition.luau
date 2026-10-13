@@ -14,6 +14,7 @@
 -- where `script` does not exist, and that is only possible if nothing here reaches outside
 -- for its dependencies. Everything it needs arrives through init().
 local EffectSystem = nil -- injected through init, like the catalog and the config
+local TargetResolver
 
 local AbilityDefinition = {}
 
@@ -41,6 +42,8 @@ AbilityDefinition.ROOT_FIELDS = {
 	"cooldown",
 	"castTime",
 	"range",
+
+	"targeting",
 	"effects",
 }
 
@@ -60,11 +63,15 @@ AbilityDefinition.CONFIG = nil
 
 -- Called once at startup. The config is injected rather than required so that a test can hand
 -- this module any limits it wants to exercise, including ones no shipped config would use.
-function AbilityDefinition.init(config, catalog, effectSystem)
+function AbilityDefinition.init(config, catalog, effectSystem, targetResolver)
 	AbilityDefinition.CONFIG = config
 	AbilityDefinition.CATALOG = catalog
 	-- Optional: without it, `stack` values go unchecked rather than checked against a copy.
 	EffectSystem = effectSystem
+	-- Optional too, and for the same reason: without it, `targeting` goes unchecked. The vocabulary
+	-- is injected rather than copied because a list that exists in two files is a list that will
+	-- disagree one day, and the day it does is the day a typo validates clean.
+	TargetResolver = targetResolver
 end
 
 local function config()
@@ -173,6 +180,55 @@ function AbilityDefinition.validate(definition)
 	-- anything". Only a negative or a non-number is a mistake.
 	if definition.range ~= nil and (type(definition.range) ~= "number" or definition.range < 0) then
 		table.insert(errors, "range must be a number >= 0 when present")
+	end
+	if type(definition.range) == "number" and definition.range > cfg.EFFECT_LIMITS.maxRange then
+		table.insert(
+			errors,
+			string.format("range exceeds the sanity limit of %d", cfg.EFFECT_LIMITS.maxRange)
+		)
+	end
+
+	-- Targeting. Absent means "self", which is the behaviour every definition had before this field
+	-- existed — and the mirror rules below make that default safe: a definition that forgot the field
+	-- and carries an offensive effect is a self+offensive contradiction, so it errors rather than
+	-- silently burning its caster. The omission is caught exactly where it would have hurt.
+	-- Absent means "self", and the rules run on the EFFECTIVE value rather than only when the field
+	-- is written. Otherwise the default would not be safe at all: a Fireball that forgot the field
+	-- would be silently self-cast, which is the phase 5 bug wearing a default's clothes.
+	--
+	-- Without a TargetResolver injected, targeting goes UNCHECKED rather than erroring -- the same
+	-- precedent as `stack` without an EffectSystem. A check that cannot run is a check the caller
+	-- opted out of, and inventing an error for it would make every fixture that does not care fail.
+	local targeting = definition.targeting or "self"
+	if TargetResolver ~= nil then
+		if not TargetResolver.isTargeting(targeting) then
+			table.insert(
+				errors,
+				string.format("unknown targeting '%s'", tostring(definition.targeting))
+			)
+		else
+			local offensive = nil
+			for _, effect in ipairs(definition.effects or {}) do
+				if type(effect) == "table" and TargetResolver.isOffensive(effect.kind) then
+					offensive = effect.kind
+					break
+				end
+			end
+			if targeting == "self" and offensive ~= nil then
+				table.insert(
+					errors,
+					string.format(
+						"self-targeting ability with offensive effect '%s': either a typo or a mechanic that needs its own name",
+						offensive
+					)
+				)
+			elseif targeting == "raycast" and offensive == nil then
+				table.insert(
+					errors,
+					"raycast-targeting ability with no offensive effect: the ray is decorative and the effects would go to the caster anyway"
+				)
+			end
+		end
 	end
 
 	-- Unknown root fields. Warned, not rejected: see ROOT_FIELDS above.

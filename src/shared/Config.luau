@@ -83,6 +83,9 @@ Config.EFFECT_LIMITS = {
 	maxDuration = 30,
 	maxRadius = 200,
 	maxDashDistance = 200,
+	-- How far a shot can reach. Load-bearing from phase 6, where targeting became real: until then
+	-- `range` appeared in the definitions and nothing read it.
+	maxRange = 500,
 	-- An instant, free ability that hits at least this hard is almost certainly a mistake.
 	-- Deliberately a warning and not an error: a framework informs, it does not decide for the
 	-- game. A stricter consumer can promote it, an experimental one can ignore it.
