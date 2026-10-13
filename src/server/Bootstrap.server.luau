@@ -169,6 +169,16 @@ Players.PlayerAdded:Connect(function(player)
 	buildSession(player)
 end)
 
+-- And the players who are already here. A script connects PlayerAdded at the point it runs, and in
+-- Studio that point is reached AFTER the local player has joined — so the event never fires for them
+-- and they get no session: no state, no intents, and an intent handler that returns in silence. This
+-- is not a Studio quirk to work around; the same thing happens to anyone already in a server when a
+-- script reloads. (It was deleted by an edit in this phase and restored by the review that noticed
+-- buildSession promising it. The prose and the code now say the same thing.)
+for _, player in ipairs(Players:GetPlayers()) do
+	buildSession(player)
+end
+
 Players.PlayerRemoving:Connect(function(player)
 	local session = sessions[player]
 	if session ~= nil then
@@ -188,6 +198,9 @@ end)
 intentRemote.OnServerEvent:Connect(function(player, payload)
 	local session = sessions[player]
 	if session == nil then
+		-- Diagnostic, and permanent. An early return with no log is indistinguishable from nothing
+		-- having happened: this exact return hid the missing seed loop through a whole playtest.
+		print(string.format("[ability-kit] intent from %s, who has no session", player.Name))
 		return
 	end
 
@@ -206,6 +219,13 @@ intentRemote.OnServerEvent:Connect(function(player, payload)
 
 	local ability = session.manager:getAbility(intent.slot)
 	if ability == nil then
+		print(
+			string.format(
+				"[ability-kit] intent from %s for slot %d, which is empty",
+				player.Name,
+				intent.slot
+			)
+		)
 		return
 	end
 
@@ -272,10 +292,12 @@ RunService.Heartbeat:Connect(function(dt)
 
 		session.stateClock = session.stateClock + dt
 		if session.stateClock >= STATE_INTERVAL then
-			-- Subtract rather than zero: the overshoot belongs to the next interval. Zeroing it
-			-- loses time on every send, which is the same "time that goes missing" shape this kit
-			-- has already met twice — in the cooldown and in the DoT.
-			session.stateClock -= STATE_INTERVAL
+			-- The overshoot belongs to the next interval, but only whole intervals of it: a stale
+			-- snapshot is not worth catching up on. `-= STATE_INTERVAL` alone would fire once per
+			-- frame until the backlog drained — a burst nobody asked for after a long frame — so the
+			-- backlog is dropped and exactly one snapshot goes out.
+			local intervals = math.floor(session.stateClock / STATE_INTERVAL)
+			session.stateClock -= intervals * STATE_INTERVAL
 			if player.Parent ~= nil then
 				-- A player can leave between the heartbeat starting and this line. Firing at a
 				-- departed player is silent, but checking costs one comparison.
