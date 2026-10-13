@@ -55,7 +55,7 @@ src/shared/
 src/server/
   EffectAdapter.luau      NEW — the engine contact. No logic, on purpose.
 tests/
-  EffectSystemSpec.luau   23 cases
+  EffectSystemSpec.luau   31 cases
   the other four suites, TestKit.luau, run.luau
 ```
 
@@ -84,7 +84,7 @@ with it.
 
 *Read `advance` for the DoT catch-up, and `applyEffect` for the stacking decision.*
 
-`git hash-object src/shared/EffectSystem.luau` -> `c0e6dc046d78`
+`git hash-object src/shared/EffectSystem.luau` -> `715eae5f4edd` -> `c0e6dc046d78`
 
 ```lua
 --[[
@@ -246,14 +246,32 @@ function EffectSystem:applyEffect(effect, abilityId, context)
 		if effect.multiplier ~= nil then
 			existing.multiplier = effect.multiplier
 		end
-		-- A refreshed DoT emits nothing. Its damage comes from the ticks, and there is no amount to
-		-- hand over here: this used to emit a `damage` event with amount = nil, which reaches the
-		-- adapter as TakeDamage(nil) and crashes in Roblox. The duration extension is the whole
-		-- effect of a refresh, and the next tick arrives through advance.
+		-- A DoT refresh emits NOTHING — its damage comes from the ticks, and emitting a `damage`
+		-- event here once produced TakeDamage(nil) — but it does reset its budget. The tick counter
+		-- is per-life, so carrying it across a refresh spends the new duration's allowance: a 4s/1s
+		-- effect refreshed after 3.5s dealt one tick and expired with three stolen.
 		if effect.kind == "dot" then
+			existing.duration = effect.duration
+			existing.ticksDealt = 0
+			existing.timeToTick = math.max(effect.interval or 1, 0.001)
 			return events
 		end
 
+		-- A refresh of a STAT effect is the opposite: the engine mirrors the stat, so it has to be
+		-- told the previous application is over before the new one begins. Exactly two events, both
+		-- of which the adapter already handles. Without the effectEnded, the adapter inserted a
+		-- second entry and only ever received one removal: the list never emptied and the character
+		-- kept the multiplier permanently.
+		local previousMultiplier = existing.multiplier
+		table.insert(events, {
+			kind = "effectEnded",
+			targetId = id,
+			target = target,
+			stat = existing.stat,
+			multiplier = previousMultiplier,
+			refreshed = true,
+			abilityId = abilityId,
+		})
 		table.insert(events, {
 			kind = effect.kind == "debuff" and "debuff" or "buff",
 			target = target,
@@ -452,7 +470,7 @@ return EffectSystem
 *The only file in this kit that cannot be tested without an engine, which is why it is the only one
 with no logic in it — every rule it could have imagined already lives in a module with a suite.*
 
-`git hash-object src/server/EffectAdapter.luau` -> `b555bbccf124`
+`git hash-object src/server/EffectAdapter.luau` -> `769fbe81cd66` -> `b555bbccf124`
 
 ```lua
 --[[
@@ -591,15 +609,14 @@ function EffectAdapter:removeSpeedEffect(character, humanoid, multiplier)
 		return false
 	end
 
-	-- One occurrence of the multiplier the ending event carried. If it is not found, the last one
-	-- goes: an effect that ended still has to leave the list, or the character stays modified.
+	-- Exactly the multiplier the ending event carried. There is no fallback: this layer does not
+	-- decide, and "remove something anyway" is deciding. The EffectSystem announces the value it is
+	-- ending, and a game that ends an effect without one of those gets a no-op rather than a guess.
 	local index = table.find(entry.multipliers, multiplier)
 	if index == nil then
-		index = #entry.multipliers
+		return false
 	end
-	if index >= 1 then
-		table.remove(entry.multipliers, index)
-	end
+	table.remove(entry.multipliers, index)
 
 	self:recomputeSpeed(character, humanoid)
 	return true
@@ -628,6 +645,17 @@ function EffectAdapter:apply(event)
 	end
 
 	local humanoid = humanoidOf(character)
+
+	-- An end is cleanup, and cleanup cannot depend on being alive: a character that dies with a
+	-- speed effect running never gets its entry removed otherwise, and the adapter leaks a record
+	-- of a character that is gone. Handled before the health guard for that reason.
+	if event.kind == "effectEnded" then
+		if humanoid == nil or event.stat ~= "speed" then
+			return false
+		end
+		return self:removeSpeedEffect(character, humanoid, event.multiplier)
+	end
+
 	if humanoid == nil or humanoid.Health <= 0 then
 		-- Re-checked here rather than trusted from the unit: a tick of DoT can arrive on the frame
 		-- a character dies, and the unit was read before that.
@@ -664,11 +692,6 @@ function EffectAdapter:apply(event)
 		end
 		self:applySpeedEffect(character, humanoid, event.multiplier)
 		return true
-	elseif event.kind == "effectEnded" then
-		if event.stat ~= "speed" then
-			return false
-		end
-		return self:removeSpeedEffect(character, humanoid, event.multiplier)
 	end
 
 	return false
@@ -690,9 +713,9 @@ return EffectAdapter
 
 ### `tests/EffectSystemSpec.luau`
 
-*23 cases. The ones worth reading: the long tick that must not swallow ticks, and the three stacking policies.*
+*31 cases. The ones worth reading: the long tick that must not swallow ticks, and the three stacking policies.*
 
-`git hash-object tests/EffectSystemSpec.luau` -> `1b303df9c83a`
+`git hash-object tests/EffectSystemSpec.luau` -> `32ce5e751e67` -> `1b303df9c83a`
 
 ```lua
 --[[
@@ -1063,13 +1086,57 @@ T("a dead target stops receiving ticks", function()
 	end
 end)
 
+T("refreshing a DoT resets its tick budget instead of spending the old one", function()
+	-- The bug the previous refresh test could not see: it advanced 0.5s, refreshed, and checked
+	-- remaining — never advancing AFTER the refresh, which is where the budget is spent.
+	local system = EffectSystem.new(Config)
+	apply(system, { dot(6, 4, 1) }, "POISON", dummy())
+	system:advance(3.5) -- three of the four ticks spent
+
+	apply(system, { dot(6, 4, 1) }, "POISON", dummy())
+	local events = system:advance(4)
+	local ticks = 0
+	for _, event in ipairs(events) do
+		if event.kind == "damage" then
+			ticks += 1
+		end
+	end
+	assert(ticks == 4, "a refreshed 4s effect owes 4 more ticks, dealt " .. ticks)
+end)
+
+T("refreshing a stat effect announces the end of the old one before the new one", function()
+	-- One event was not enough: the adapter mirrors the stat, so a refresh that stayed silent left
+	-- an entry in its list that no later expiry ever removed — a permanent speed change.
+	local system = EffectSystem.new(Config)
+	apply(system, { buff(1.5, 5) }, "HASTE", dummy())
+	local events = apply(system, { buff(1.5, 5) }, "HASTE", dummy())
+	assert(#events == 2, "a stat refresh is two events, got " .. #events)
+	assert(events[1].kind == "effectEnded", "the end of the old application comes first")
+	assert(events[1].multiplier == 1.5, "carrying the multiplier being ended")
+	assert(events[2].kind == "buff", "and the new application follows")
+	assert(system:hasActive("DUMMY", "HASTE"), "still one instance, refreshed")
+	assert(#system:getActiveFor("DUMMY") == 1, "and not two")
+end)
+
+T("refreshing a debuff announces its end too", function()
+	local system = EffectSystem.new(Config)
+	local slow = { kind = "debuff", stat = "speed", multiplier = 0.5, duration = 4 }
+	apply(system, { slow }, "SLOW", dummy())
+	local events = apply(system, { slow }, "SLOW", dummy())
+	assert(
+		#events == 2 and events[1].kind == "effectEnded",
+		"a debuff refresh is announced as well"
+	)
+	assert(events[2].kind == "debuff", "and re-applied as a debuff")
+end)
+
 return T.report()
 ```
 
 ## How to test it
 
 ```
-luau tests/run.luau          # 164 cases across 5 suites
+luau tests/run.luau          # 172 cases across 5 suites
 selene src/ tests/           # 0 errors, 0 warnings
 stylua --check src/ tests/   # prints nothing
 ```
@@ -1142,9 +1209,9 @@ it. Engine state, kept in the engine layer, which is why it is not in the Effect
 
 ## The numbers
 
-- Tests: **169** across 5 suites — AbilityDefinitionSpec 42 · AbilitySpec 34 · AbilityManagerSpec 35 · ResourceManagerSpec 30 · EffectSystemSpec 28
-- Lines: **2157 source + 2057 tests** = 4214 (the adapter is 231 of the source)
-- Commits: **22**
+- Tests: **172** across 5 suites — AbilityDefinitionSpec 42 · AbilitySpec 34 · AbilityManagerSpec 35 · ResourceManagerSpec 30 · EffectSystemSpec 31
+- Lines: **2180 source + 2101 tests** = 4281 (the adapter is 236 of the source)
+- Commits: **25**
 - selene: 0 errors, 0 warnings · stylua: clean
 - Studio check: passed twice, against a real Humanoid, with nothing left in the place
 
@@ -1175,6 +1242,26 @@ state being restored is engine state.
 That is the honest limit of the pure/adapter split: it catches what lives on either side, not what
 lives between them. The answer is not a cleverer split, it is **a check that crosses the seam**, and
 that is what the second block above is.
+
+## Round two of the same phase
+
+The review found two more, and **both were introduced by the fixes of round one**:
+
+| # | Finding | Shape |
+|---|---------|-------|
+| A | a refreshed DoT kept the spent tick budget, so a 4s effect refreshed after 3.5s dealt one tick and expired with three stolen | a counter that outlived what it counted |
+| B | a refreshed speed buff left the multiplier permanent: the system stayed silent, the adapter inserted a second entry, and only one expiry ever arrived | an announcement one layer made and the other never heard |
+
+Finding A's test is the lesson: the case for the refresh advanced 0.5s, refreshed, and checked
+`remaining` — **never advancing after the refresh**, which is the only place the budget is spent.
+
+Finding B needed a protocol, not a patch, and it is written into the refresh branch: **a DoT refresh
+resets its timers silently; a stat refresh announces the end of the old application and then the new
+one.** Two events, both of which the adapter already handled. The asymmetry is real and deliberate —
+a DoT is timer state the engine cannot see, a stat is state the engine mirrors.
+
+Both are the same shape this phase keeps producing: **a rule that lives between two layers, where
+neither suite looks.**
 
 ## What is left in this phase
 
