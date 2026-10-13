@@ -20,7 +20,7 @@ local function cargar(nombre, ruta)
 	table.insert(todas, resultado == true)
 end
 
--- cargar("MiModulo", "./MiModuloSpec")
+cargar("AbilityDefinition", "./AbilityDefinitionSpec")
 
 local bien = 0
 for _, ok in ipairs(todas) do

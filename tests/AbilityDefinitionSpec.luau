@@ -1,0 +1,216 @@
+--[[
+	AbilityDefinitionSpec.luau — runs with `luau tests/AbilityDefinitionSpec.luau`.
+	No Studio, no Roblox, no dependencies. That is only possible because the module under test
+	loads nothing: the config and the catalog are injected below.
+]]
+
+local TestKit = require("./TestKit")
+-- Paths must be literal strings: the Luau CLI's require-by-string cannot resolve a
+-- concatenated path, which is why the four abilities are listed out below instead of looped.
+local AbilityDefinition = require("../src/shared/AbilityDefinition")
+local Config = require("../src/shared/Config")
+
+local T = TestKit.new("AbilityDefinition")
+
+-- A definition that must pass. Each case starts from this and breaks exactly one thing, so a
+-- failure points at one rule instead of at "the big table I pasted".
+local function valid()
+	return {
+		id = "TEST_ABILITY",
+		displayName = "Test Ability",
+		description = "exists only in this file",
+		cost = { mana = 10 },
+		cooldown = 1,
+		castTime = 0,
+		range = 30,
+		effects = { { kind = "damage", amount = 10, radius = 0 } },
+	}
+end
+
+local function validate(def)
+	AbilityDefinition.init(Config, {})
+	return AbilityDefinition.validate(def)
+end
+
+-- ===== the legal path =====
+
+T("a well-formed definition produces no errors and no warnings", function()
+	local errors, warnings = validate(valid())
+	assert(#errors == 0, "unexpected errors: " .. table.concat(errors, " | "))
+	assert(#warnings == 0, "unexpected warnings: " .. table.concat(warnings, " | "))
+end)
+
+T("the four shipped abilities are all legal", function()
+	-- Loaded by hand rather than in a loop: require-by-string needs a literal path, and a
+	-- dynamic one fails as a load error that looks like a missing file.
+	local shipped = {
+		FIREBALL = require("../src/shared/abilities/Fireball"),
+		POISON = require("../src/shared/abilities/Poison"),
+		DASH = require("../src/shared/abilities/Dash"),
+		HEAL = require("../src/shared/abilities/Heal"),
+	}
+	AbilityDefinition.init(Config, {})
+	for name, definition in pairs(shipped) do
+		local errors = AbilityDefinition.validate(definition)
+		assert(#errors == 0, name .. " should be legal, got: " .. table.concat(errors, " | "))
+	end
+	assert(shipped.FIREBALL.id == "FIREBALL", "the definition must carry its own id")
+end)
+
+-- ===== errors =====
+
+T("a definition that is not a table is rejected", function()
+	local errors = validate("not a table")
+	assert(#errors == 1 and errors[1]:find("not a table"), "should say it is not a table")
+end)
+
+T("a missing id is an error", function()
+	local def = valid()
+	def.id = nil
+	local errors = validate(def)
+	assert(#errors > 0, "an ability with no id is unreachable, so it must be rejected")
+end)
+
+T("an empty id is an error", function()
+	local def = valid()
+	def.id = ""
+	assert(#validate(def) > 0, "this definition must be rejected, not silently accepted")
+end)
+
+T("a missing displayName is an error", function()
+	local def = valid()
+	def.displayName = nil
+	assert(#validate(def) > 0, "this definition must be rejected, not silently accepted")
+end)
+
+T("a negative cooldown is an error", function()
+	local def = valid()
+	def.cooldown = -1
+	assert(#validate(def) > 0, "this definition must be rejected, not silently accepted")
+end)
+
+T("a negative castTime is an error", function()
+	local def = valid()
+	def.castTime = -0.5
+	assert(#validate(def) > 0, "this definition must be rejected, not silently accepted")
+end)
+
+T("a cost naming an unknown resource pool is an error", function()
+	local def = valid()
+	def.cost = { honk = 10 }
+	local errors = validate(def)
+	assert(#errors > 0 and table.concat(errors):find("honk"), "should name the bad pool")
+end)
+
+T("a cost larger than the pool maximum is an error", function()
+	local def = valid()
+	def.cost = { mana = Config.RESOURCES.mana.max + 1 }
+	local errors = validate(def)
+	assert(#errors > 0, "an ability nobody can ever cast is a definition bug")
+end)
+
+T("a negative cost is an error", function()
+	local def = valid()
+	def.cost = { mana = -5 }
+	assert(#validate(def) > 0, "this definition must be rejected, not silently accepted")
+end)
+
+T("zero effects is an error", function()
+	local def = valid()
+	def.effects = {}
+	local errors = validate(def)
+	assert(#errors > 0 and table.concat(errors):find("does nothing"), "should say it does nothing")
+end)
+
+T("an unknown effect kind is an error", function()
+	local def = valid()
+	def.effects = { { kind = "kaboom", amount = 10 } }
+	local errors = validate(def)
+	assert(#errors > 0 and table.concat(errors):find("kaboom"), "should name the unknown kind")
+end)
+
+T("damage with no amount is an error", function()
+	local def = valid()
+	def.effects = { { kind = "damage" } }
+	assert(#validate(def) > 0, "this definition must be rejected, not silently accepted")
+end)
+
+T("damage beyond the sanity limit is an error", function()
+	local def = valid()
+	def.effects = { { kind = "damage", amount = Config.EFFECT_LIMITS.maxDamage + 1 } }
+	assert(#validate(def) > 0, "this definition must be rejected, not silently accepted")
+end)
+
+T("a DoT with no interval is an error: it would never tick", function()
+	local def = valid()
+	def.effects = { { kind = "dot", amount = 5, duration = 3 } }
+	local errors = validate(def)
+	assert(#errors > 0 and table.concat(errors):find("never ticks"), "should say it never ticks")
+end)
+
+T("a DoT longer than the limit is an error", function()
+	local def = valid()
+	def.effects = {
+		{ kind = "dot", amount = 5, duration = Config.EFFECT_LIMITS.maxDuration + 1, interval = 1 },
+	}
+	assert(#validate(def) > 0, "this definition must be rejected, not silently accepted")
+end)
+
+T("a buff with no stat is an error", function()
+	local def = valid()
+	def.effects = { { kind = "buff", multiplier = 1.5, duration = 5 } }
+	assert(#validate(def) > 0, "this definition must be rejected, not silently accepted")
+end)
+
+T("a dash with no distance is an error", function()
+	local def = valid()
+	def.effects = { { kind = "dash", duration = 0.2 } }
+	assert(#validate(def) > 0, "this definition must be rejected, not silently accepted")
+end)
+
+T("validating before init returns an error instead of crashing", function()
+	AbilityDefinition.init(nil, nil)
+	local errors = AbilityDefinition.validate(valid())
+	assert(#errors > 0 and table.concat(errors):find("init"), "should say init was never called")
+end)
+
+T("two abilities sharing an id are caught by the catalog check", function()
+	local a, b = valid(), valid()
+	local catalog = { [1] = a, [2] = b }
+	local errors = AbilityDefinition.validateCatalog(catalog)
+	assert(#errors > 0, "a duplicate id makes the second ability unreachable forever")
+end)
+
+-- ===== warnings, not errors =====
+
+T("instant, free, hard-hitting damage is a WARNING, not an error", function()
+	local def = valid()
+	def.cooldown = 0
+	def.castTime = 0
+	def.cost = nil
+	def.effects = { { kind = "damage", amount = 40 } }
+	local errors, warnings = validate(def)
+	assert(#errors == 0, "it is legal, it is just probably a mistake")
+	assert(#warnings > 0 and table.concat(warnings):find("spammable"), "should call it spammable")
+end)
+
+T("a cast with no cooldown is only a warning", function()
+	local def = valid()
+	def.castTime = 1.5
+	def.cooldown = nil
+	local errors, warnings = validate(def)
+	assert(#errors == 0, "a long cast with no cooldown is legal, it is only worth flagging")
+	assert(#warnings > 0, "expected this to be reported as a warning")
+end)
+
+-- ===== lookup =====
+
+T("get returns the definition it was given, and nil for anything else", function()
+	local def = valid()
+	AbilityDefinition.init(Config, { TEST_ABILITY = def })
+	assert(AbilityDefinition.get("TEST_ABILITY") == def, "get must return the same table")
+	assert(AbilityDefinition.get("NOPE") == nil, "an unknown id must return nil")
+	assert(AbilityDefinition.get(nil) == nil, "a nil id must not throw")
+end)
+
+return T.report()
