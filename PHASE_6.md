@@ -45,8 +45,36 @@ It enters when a definition needs it and brings its own specification with it.
 - and **the resolver always returns a list** — zero elements for a miss, one for a single-target
   shot, N for an area. A resolver that returned `target` for one case and `targets` for the other
   would push that special case into every caller; with a list, the caller is a loop that happens to
-  run once. The caster is inside the sphere if the impact point is close enough, because geometry
-  does not know about teams — declared here rather than discovered in a playtest.
+  run once.
+
+**The impact point comes in, and is never nil.** The signature is
+`resolve(candidates, origin, direction, range, radius, impactPoint)`, and the adapter always supplies
+one:
+
+```
+hit       ->  where the ray actually landed
+no hit    ->  origin + direction * range
+```
+
+The fallback is not a detail. Without it the sphere would have to be centred on nothing, or on a
+guess, and the decision about what a shot that hit nothing means would move into the adapter — the
+exact special case the list contract already killed for the return value. **A miss centres the blast
+at the end of the shot, not in the air behind a wall.**
+
+**Two rules about the caster**, both pure and therefore both tested here:
+
+- **the caster is never a direct target.** The ray starts at the caster's root, so the caster sits at
+  `t = 0`, and `t = 0` is not a hit: nothing is ever struck at zero distance. The adapter's half of
+  this rule is excluding the caster from the raycast itself
+  (`RaycastParams.FilterDescendantsInstances = { casterCharacter }`), because otherwise the first hit
+  of a Fireball is the arm of the person firing it;
+- **the caster can be caught by the splash**, which is a different sentence and is meant to be. A
+  blast at the caster's feet reaching the caster is geometry, not a targeting decision.
+
+**The splash ignores walls**, and that is one line rather than a surprise: a candidate behind a wall
+relative to the impact point takes the splash anyway. The raycast did the occlusion work for the
+centre of the blast; the blast is the blast. **Occlusion-aware splash, like `nearest`, enters when
+something asks for it by name.**
 
 Both are stated here rather than left implicit because the first ability that needs an AoE would
 otherwise invent the rule on its own, and this project has seen how that ends.
@@ -106,6 +134,19 @@ invalid request versus legitimate miss — is the whole reason the logs are usef
 list in the validator is a copy that drifts. `targeting = "raycst"` is an **error at load**, not a
 silent fallback to self.
 
+The injection becomes the third: `AbilityDefinition.init(Config, catalog, EffectSystem, TargetResolver)`.
+**Every spec that calls `init()` with fewer arguments is updated with it** — same precedent as
+"without EffectSystem injected, stack goes unchecked": a validator that cannot see the vocabulary
+cannot check it, and a check that silently does not run is worse than no check.
+
+### D8. `range` is validated now, because it finally does something
+
+Debt from phase 1: `range = -50` and `range = "far"` both pass the validator today. Until this phase
+`range` was decorative — it appeared in the definitions and nothing read it. Now it decides how far a
+shot reaches, so it becomes load-bearing and the validator owes it a rule: **a number ≥ 0 when
+present, with a sanity ceiling in `EFFECT_LIMITS` alongside the others.** `AbilityDefinitionSpec`
+grows its cases with them.
+
 ## The seam, made explicit
 
 ```
@@ -123,10 +164,35 @@ tested with tables:
   which is nearest, and who is inside the sphere. It never asks where a wall is, because a candidate
   that reached it has already been through the raycast.
 
-A firing is a single event carrying several effects, so **the Bootstrap pre-splits them** — offensive
-effects are applied to the resolved target and the rest to the caster, one `applyEffect` call each.
-That keeps `EffectSystem` unchanged, which the phase asked for; if a second reason to split appears in
+A firing is a single event carrying several effects, so **the Bootstrap pre-splits them**, and the
+shape of the split matters:
+
+```lua
+for _, target in ipairs(resolved) do
+    for _, effect in ipairs(firing.effects) do
+        if TargetResolver.isOffensive(effect.kind) then
+            effects:applyEffect(firing, effect, target)
+        end
+    end
+end
+for _, effect in ipairs(firing.effects) do
+    if not TargetResolver.isOffensive(effect.kind) then
+        effects:applyEffect(firing, effect, caster)   -- ONCE, not once per target
+    end
+end
+```
+
+**The non-offensive loop is outside the target loop on purpose.** A raycast ability that buffs
+itself while hitting three enemies produces **one** buff event, not three. The nested version would be
+a buff stacked by the number of people standing in front of you, which is a bug that looks like a
+feature until somebody reads the numbers.
+
+`EffectSystem` stays unchanged, which the phase asked for; if a second reason to split appears in
 phase 7, this is the place to promote it to the effect system knowing about both targets.
+
+**The aimed-kinds list is declared once**, in `TargetResolver.OFFENSIVE_KINDS`, and read by three
+places: the validator, the pre-split above, and the resolver's own selection. Three copies of a list
+of three strings is the drift D7 already kills for the enum, so it gets the same treatment.
 
 `TargetResolver` is testable in a terminal with tables, which is why the decision about what counts
 as a candidate lives there and not in the raycast code.
@@ -166,6 +232,23 @@ Not with a suite. With **an observed run**, as phase 5 was:
 - Fireball damaging **another character at distance** — not its caster;
 - a **miss** spending mana with no effect and **no line in the Output**;
 - a **targeting refusal** visible in the Output.
+
+**The harness for the first one, because a solo playtest cannot observe it.** "Fireball damages
+another character" needs a second character, and the kit has no second player. The procedure is the
+one phase 4b used for its speed checks:
+
+```
+1. build a disposable Model in Workspace with a Humanoid and a HumanoidRootPart, anchored,
+   positioned in front of the caster and inside the ability's range;
+2. let the bootstrap's own describe() see it — no change to the kit, it is a Character with a
+   Humanoid, which is exactly what the adapter accepts;
+3. activate Fireball and read the dummy's Humanoid.Health before and after;
+4. assert the CASTER's health is unchanged, which is the half that proves the fix rather than the
+   symptom.
+```
+
+Written as procedure rather than as an aspiration: without the dummy the closing criterion is not
+executable, and a criterion that cannot be executed is not a criterion.
 
 A phase that ends with a green suite and a silent engine is phase 4b again.
 
