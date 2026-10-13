@@ -68,14 +68,14 @@ T("the effects fire exactly once, however many ticks run", function()
 	-- The invariant. A DoT applied twice is damage nobody can explain, so the firing is one-way.
 	local a = newAbility()
 	a:startActivation()
-	local veces = 0
+	local firedCount = 0
 	for _ = 1, 20 do
 		local fired = a:advance(0.1)
 		if fired then
-			veces += 1
+			firedCount += 1
 		end
 	end
-	assert(veces == 1, "fired " .. veces .. " times, must be exactly 1")
+	assert(firedCount == 1, "fired " .. firedCount .. " times, must be exactly 1")
 end)
 
 T("an instant ability's cooldown starts when it fires, not before", function()
@@ -159,7 +159,7 @@ T("canActivate refuses while already casting, and says which", function()
 	local a = newAbility(slow())
 	a:startActivation()
 	local ok, reason = a:canActivate(ownerWith(100))
-	assert(not ok, "the dead cannot cast")
+	assert(not ok, "a cast in progress cannot be started again")
 	assert(reason == "alreadyCasting", "got: " .. tostring(reason))
 end)
 
@@ -242,10 +242,10 @@ T("interrupting during a cooldown leaves the cooldown alone", function()
 	local a = newAbility()
 	a:startActivation()
 	a:advance(0.05)
-	local antes = a:getCooldownRemaining()
+	local before = a:getCooldownRemaining()
 	local ok = a:interrupt()
 	assert(not ok, "there is no cast to cancel")
-	assert(a:getCooldownRemaining() == antes, "and the cooldown must survive untouched")
+	assert(a:getCooldownRemaining() == before, "and the cooldown must survive untouched")
 end)
 
 -- ===== the snapshot =====
@@ -272,8 +272,8 @@ T("getCastProgress reports 1 for an instant ability and a fraction for a cast", 
 	a:startActivation()
 	assert(a:getCastProgress() == 0, "at the start")
 	a:advance(0.5)
-	local mitad = a:getCastProgress()
-	assert(mitad > 0.4 and mitad < 0.6, "halfway through a 1s cast, got " .. mitad)
+	local halfway = a:getCastProgress()
+	assert(halfway > 0.4 and halfway < 0.6, "halfway through a 1s cast, got " .. halfway)
 end)
 
 T("reset clears a cooldown and a cast in progress", function()
@@ -290,12 +290,12 @@ T("two instances of the same definition do not share state", function()
 	-- The definition is shared by design; the state must not be. If this ever fails, someone has
 	-- put mutable state in a definition, where the validator cannot see it.
 	local def = instant()
-	local uno = Ability.new(def, Config)
-	local dos = Ability.new(def, Config)
-	uno:startActivation()
-	uno:advance(0.05)
-	assert(dos:isReady(), "the second instance must still be fresh")
-	assert(dos:getCooldownRemaining() == 0, "and off cooldown")
+	local first = Ability.new(def, Config)
+	local second = Ability.new(def, Config)
+	first:startActivation()
+	first:advance(0.05)
+	assert(second:isReady(), "the second instance must still be fresh")
+	assert(second:getCooldownRemaining() == 0, "and off cooldown")
 	assert(def.cooldown == 3, "and the definition must not have been written to")
 end)
 
@@ -307,6 +307,64 @@ T("a nonsense dt is refused instead of corrupting the timers", function()
 	local fired2 = a:advance("soon")
 	assert(not fired2, "and a string must not move anything either")
 	assert(a:getCooldownRemaining() == 0, "timers untouched")
+end)
+
+T("interrupt falls back to the default message for a reason the config does not know", function()
+	-- A caller can pass any string. A nil here reaches the player as an empty message and reads as
+	-- a bug in a system that is working perfectly.
+	local a = newAbility(slow())
+	a:startActivation()
+	local cancelled, message = a:interrupt("aReasonNobodyDefined")
+	assert(cancelled, "the cast must still cancel")
+	assert(
+		message == Config.MESSAGES.castInterrupted,
+		"and the player must get a sentence, not nil"
+	)
+end)
+
+T("the leftover dt from the tick that finishes a cast is credited to the cooldown", function()
+	-- 1.4s of dt against a 1.0s cast and an 8s cooldown. Losing the 0.4 puts the ability further
+	-- from ready than it is, and only ever on a tick that ran long.
+	local a = newAbility(slow())
+	a:startActivation()
+	local fired = a:advance(1.4)
+	assert(fired, "the cast completes")
+	assert(
+		math.abs(a:getCooldownRemaining() - 7.6) < 0.001,
+		"0.4s must be credited, got " .. a:getCooldownRemaining()
+	)
+end)
+
+T("a lag spike does not mint cooldown out of nothing", function()
+	-- The case that motivated the rule: a 3s hitch against a 1s cast. Without the credit the
+	-- ability waits 2 seconds longer than the definition says, and never in a reproducible way.
+	local a = newAbility(slow())
+	a:startActivation()
+	a:advance(3)
+	assert(
+		math.abs(a:getCooldownRemaining() - 6) < 0.001,
+		"2s of overshoot must be credited, got " .. a:getCooldownRemaining()
+	)
+end)
+
+T("a cast completing exactly on the boundary fires and leaves no negative timer", function()
+	-- advance(castTime) exactly, where a <= versus < hides.
+	local a = newAbility(slow())
+	a:startActivation()
+	local fired = a:advance(1)
+	assert(fired, "a 1s advance on a 1s cast must complete it, not miss by a float hair")
+	assert(a:getCastRemaining() == 0, "and leave no negative cast time")
+	assert(
+		math.abs(a:getCooldownRemaining() - 8) < 0.001,
+		"with nothing to credit, the full cooldown stands, got " .. a:getCooldownRemaining()
+	)
+end)
+
+T("startActivation twice does nothing the second time", function()
+	local a = newAbility()
+	assert(a:startActivation(), "the first call starts it")
+	assert(not a:startActivation(), "the second must be refused, or the same ability fires twice")
+	assert(a:getState() == Ability.STATES.active, "and the state must be untouched")
 end)
 
 return T.report()

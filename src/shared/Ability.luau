@@ -57,6 +57,7 @@ function Ability:reset()
 	self.state = Ability.STATES.idle
 	self.cooldownRemaining = 0
 	self.castRemaining = 0
+	self.castOvershoot = 0
 	self.effectsEmitted = false
 	return self
 end
@@ -124,11 +125,11 @@ function Ability:canActivate(owner)
 			return false, "notEnoughResources"
 		end
 		for pool, amount in pairs(cost) do
-			local actual = resources[pool]
+			local available = resources[pool]
 			if
-				type(actual) ~= "table"
-				or type(actual.current) ~= "number"
-				or actual.current < amount
+				type(available) ~= "table"
+				or type(available.current) ~= "number"
+				or available.current < amount
 			then
 				return false, "notEnoughResources"
 			end
@@ -194,8 +195,14 @@ function Ability:advance(dt)
 	end
 
 	if self.state == Ability.STATES.casting then
-		self.castRemaining = math.max(0, self.castRemaining - dt)
+		self.castRemaining = self.castRemaining - dt
 		if self.castRemaining <= 0 then
+			-- Keep the overshoot instead of clamping it away. On a normal tick it is microseconds;
+			-- on a lag spike it is seconds, and dropping them starts the cooldown at full value
+			-- while real time has already passed. The result is a cooldown that is longer than it
+			-- says, only sometimes, which is the worst way for a number to be wrong.
+			self.castOvershoot = -self.castRemaining
+			self.castRemaining = 0
 			self.state = Ability.STATES.active
 		end
 	end
@@ -209,7 +216,10 @@ function Ability:advance(dt)
 	if self.state == Ability.STATES.active and not self.effectsEmitted then
 		self.effectsEmitted = true
 		self.state = Ability.STATES.cooldown
-		self.cooldownRemaining = self.definition.cooldown or 0
+		-- The leftover of the tick that finished the cast is credited here, so a hitch cannot
+		-- silently lengthen the wait.
+		self.cooldownRemaining = math.max(0, (self.definition.cooldown or 0) - self.castOvershoot)
+		self.castOvershoot = 0
 		if self.cooldownRemaining <= 0 then
 			self.state = Ability.STATES.idle
 		end
@@ -237,7 +247,10 @@ function Ability:interrupt(reason)
 
 	-- A cancelled cast costs nothing and goes on no cooldown. Charging for a cast that never
 	-- happened is the kind of thing players notice and never forgive.
+	-- The reason comes from inside the kit, but a caller can pass anything. Falling back keeps a
+	-- refusal explainable: a nil here reaches the player as an empty message and reads as a bug.
 	local message = self.config.MESSAGES[reason or "castInterrupted"]
+		or self.config.MESSAGES.castInterrupted
 	return true, message
 end
 
