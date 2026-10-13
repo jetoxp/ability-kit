@@ -150,6 +150,11 @@ function EffectSystem:applyEffect(effect, abilityId, context)
 	end
 
 	if existing ~= nil and stacking == "refresh" then
+		-- Captured BEFORE the overwrite. Reading it after announced the NEW multiplier as the one
+		-- ending, so the adapter looked for a value that was never in its list, removed nothing, and
+		-- the old application stayed until the character's speed was compounded and then stuck.
+		local previousMultiplier = existing.multiplier
+
 		existing.remaining = effect.duration
 		if effect.amount ~= nil then
 			existing.amount = effect.amount
@@ -173,7 +178,6 @@ function EffectSystem:applyEffect(effect, abilityId, context)
 		-- of which the adapter already handles. Without the effectEnded, the adapter inserted a
 		-- second entry and only ever received one removal: the list never emptied and the character
 		-- kept the multiplier permanently.
-		local previousMultiplier = existing.multiplier
 		table.insert(events, {
 			kind = "effectEnded",
 			targetId = id,

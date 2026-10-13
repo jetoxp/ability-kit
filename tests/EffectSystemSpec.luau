@@ -393,6 +393,18 @@ T("refreshing a stat effect announces the end of the old one before the new one"
 	assert(#events == 2, "a stat refresh is two events, got " .. #events)
 	assert(events[1].kind == "effectEnded", "the end of the old application comes first")
 	assert(events[1].multiplier == 1.5, "carrying the multiplier being ended")
+
+	-- And with a DIFFERENT multiplier, the end must carry the OLD one. Reading it after the
+	-- overwrite announced the new value, the adapter found nothing to remove, and the old
+	-- application stayed: the speed compounded and then stuck.
+	local system2 = EffectSystem.new(Config)
+	apply(system2, { buff(2, 5) }, "HASTE", dummy())
+	local change = apply(system2, { buff(3, 5) }, "HASTE", dummy())
+	assert(
+		change[1].multiplier == 2,
+		"the ending event carries the OLD multiplier, got " .. tostring(change[1].multiplier)
+	)
+	assert(change[2].multiplier == 3, "and the new application carries the new one")
 	assert(events[2].kind == "buff", "and the new application follows")
 	assert(system:hasActive("DUMMY", "HASTE"), "still one instance, refreshed")
 	assert(#system:getActiveFor("DUMMY") == 1, "and not two")

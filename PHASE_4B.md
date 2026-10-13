@@ -84,7 +84,7 @@ with it.
 
 *Read `advance` for the DoT catch-up, and `applyEffect` for the stacking decision.*
 
-`git hash-object src/shared/EffectSystem.luau` -> `715eae5f4edd` -> `c0e6dc046d78`
+`git hash-object src/shared/EffectSystem.luau` -> `e0d6aacb386a`
 
 ```lua
 --[[
@@ -239,6 +239,11 @@ function EffectSystem:applyEffect(effect, abilityId, context)
 	end
 
 	if existing ~= nil and stacking == "refresh" then
+		-- Captured BEFORE the overwrite. Reading it after announced the NEW multiplier as the one
+		-- ending, so the adapter looked for a value that was never in its list, removed nothing, and
+		-- the old application stayed until the character's speed was compounded and then stuck.
+		local previousMultiplier = existing.multiplier
+
 		existing.remaining = effect.duration
 		if effect.amount ~= nil then
 			existing.amount = effect.amount
@@ -262,7 +267,6 @@ function EffectSystem:applyEffect(effect, abilityId, context)
 		-- of which the adapter already handles. Without the effectEnded, the adapter inserted a
 		-- second entry and only ever received one removal: the list never emptied and the character
 		-- kept the multiplier permanently.
-		local previousMultiplier = existing.multiplier
 		table.insert(events, {
 			kind = "effectEnded",
 			targetId = id,
@@ -470,7 +474,7 @@ return EffectSystem
 *The only file in this kit that cannot be tested without an engine, which is why it is the only one
 with no logic in it — every rule it could have imagined already lives in a module with a suite.*
 
-`git hash-object src/server/EffectAdapter.luau` -> `769fbe81cd66` -> `b555bbccf124`
+`git hash-object src/server/EffectAdapter.luau` -> `769fbe81cd66`
 
 ```lua
 --[[
@@ -715,7 +719,7 @@ return EffectAdapter
 
 *31 cases. The ones worth reading: the long tick that must not swallow ticks, and the three stacking policies.*
 
-`git hash-object tests/EffectSystemSpec.luau` -> `32ce5e751e67` -> `1b303df9c83a`
+`git hash-object tests/EffectSystemSpec.luau` -> `37e2fb6f98fd`
 
 ```lua
 --[[
@@ -1113,6 +1117,18 @@ T("refreshing a stat effect announces the end of the old one before the new one"
 	assert(#events == 2, "a stat refresh is two events, got " .. #events)
 	assert(events[1].kind == "effectEnded", "the end of the old application comes first")
 	assert(events[1].multiplier == 1.5, "carrying the multiplier being ended")
+
+	-- And with a DIFFERENT multiplier, the end must carry the OLD one. Reading it after the
+	-- overwrite announced the new value, the adapter found nothing to remove, and the old
+	-- application stayed: the speed compounded and then stuck.
+	local system2 = EffectSystem.new(Config)
+	apply(system2, { buff(2, 5) }, "HASTE", dummy())
+	local change = apply(system2, { buff(3, 5) }, "HASTE", dummy())
+	assert(
+		change[1].multiplier == 2,
+		"the ending event carries the OLD multiplier, got " .. tostring(change[1].multiplier)
+	)
+	assert(change[2].multiplier == 3, "and the new application carries the new one")
 	assert(events[2].kind == "buff", "and the new application follows")
 	assert(system:hasActive("DUMMY", "HASTE"), "still one instance, refreshed")
 	assert(#system:getActiveFor("DUMMY") == 1, "and not two")
@@ -1263,6 +1279,17 @@ a DoT is timer state the engine cannot see, a stat is state the engine mirrors.
 Both are the same shape this phase keeps producing: **a rule that lives between two layers, where
 neither suite looks.**
 
+## The process rule this phase earned
+
+Every time a fix touches the seam between the pure modules and the adapter, **the Studio check needs
+a new case crossing that seam**. It has now been true three times:
+
+- the speed **stack** case found the flag that could not count;
+- the speed **refresh** case found the multiplier handed over after being overwritten;
+- and both were invisible to the suite, which tests one side or the other and never the middle.
+
+A fix that lives in the seam is not verified by a suite that does not cross it.
+
 ## What is left in this phase
 
 Nothing code-side. The phase is complete: the rules have a suite, the engine contact has a
@@ -1275,6 +1302,9 @@ Known limitations, written down rather than hidden:
   not allowed to do.
 - **The dash is a single displacement**, not a motion over time. A smooth version needs a
   `LinearVelocity` for the duration, which belongs to the character/movement phase.
+- **`speedEffects` keys are Instances held strongly.** A character destroyed without an `effectEnded`
+  leaves its entry, and with it a reference to a dead Instance. Weak keys are the answer if this ever
+  grows; today it is a small record and not a leak with consequences.
 - **The `Baseplate` and `SpawnLocation` are untouched**, and Rojo will not remove them: the
   project describes `Workspace` without a `$path`, and that default means unknown instances
   are left alone. Adding a `$path` there later would start deleting what it does not describe.
