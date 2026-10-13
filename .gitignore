@@ -1,0 +1,6 @@
+build/
+*.rbxl
+*.rbxlx
+sourcemap.json
+.rokit/
+.vscode/
