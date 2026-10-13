@@ -173,7 +173,7 @@ return Net
 *The composition root. Read the header for what it refuses to do, and the intent handler for the
 order.*
 
-`git hash-object src/server/Bootstrap.server.luau` -> `5e31a0567f1f`
+`git hash-object src/server/Bootstrap.server.luau` -> `a690d65c5621`
 
 **The paste here is a diff, not the file.** A document that repeats a whole file is a document that
 will one day disagree with it — this one already did, for three rounds, describing respawn wiring
@@ -341,7 +341,7 @@ end)
 
 *The seam phase 7 will read from.*
 
-`git hash-object src/client/ClientState.luau` -> `7236a8d567af` -> `7236a8d567af`
+`git hash-object src/client/ClientState.luau` -> `b08e5ee52aa6` -> `7236a8d567af`
 
 ```lua
 --[[
@@ -484,7 +484,7 @@ return Config
 ## How to test it
 
 ```
-luau tests/run.luau          # 178 cases across 6 suites
+luau tests/run.luau          # 179 cases across 6 suites
 selene src/ tests/           # 0 errors, 0 warnings
 stylua --check src/ tests/   # prints nothing
 ```
@@ -492,6 +492,22 @@ stylua --check src/ tests/   # prints nothing
 `NetSpec` covers the client-facing boundary — every case is a payload this version refuses.
 The Bootstrap has no suite and cannot have one: it is the file that needs a server. What it
 has is a playtest, and the check that matters is that a snapshot reaches the client.
+
+## The regression this round introduced and removed
+
+The reviewer's shape for the respawn wiring — `CharacterAdded` and `CharacterRemoving` — was adopted,
+and adopted in the wrong place: inside the `PlayerAdded` callback. **That silently missed the seed
+loop** for players already in the game, which is the only path that ever runs in Studio. The
+documented boot bug, reintroduced by the fix for the boot bug.
+
+It now lives in `buildSession`, which is the one function both paths go through. **The lesson is
+structural rather than moral: two callers, one function, and anything that must happen to every
+player belongs in the function both callers call — not in one of them.** The comment in the file says
+exactly that, so the next person to move it knows why it is where it is.
+
+**And its verification is still blocked** by the wire finding above: with the intent not reaching an
+activation, there is no mana to spend and no cooldown to clear, so a death would prove nothing about
+the wiring. The two are ordered, not parallel.
 
 ## What this round changed
 
@@ -594,8 +610,8 @@ two of them have never been watched.
 
 ## The numbers
 
-- Tests: **178** across 6 suites — AbilityDefinitionSpec 42 · AbilitySpec 34 · AbilityManagerSpec 35 · ResourceManagerSpec 30 · EffectSystemSpec 31 · NetSpec 6
-- Lines: **2570 source + 2171 tests** = 4741
-- Commits: **29**
+- Tests: **179** across 6 suites — AbilityDefinitionSpec 42 · AbilitySpec 34 · AbilityManagerSpec 35 · ResourceManagerSpec 30 · EffectSystemSpec 31 · NetSpec 7
+- Lines: **2656 source + 2178 tests** = 4834
+- Commits: **36**
 - selene: 0 errors, 0 warnings · stylua: clean
 - Playtest: ran, found one bug, stopped. The re-run is pending.
