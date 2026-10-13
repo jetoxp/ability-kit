@@ -252,9 +252,11 @@ function Ability:interrupt(reason)
 	self.castRemaining = 0
 	self.effectsEmitted = false
 
-	-- A cancelled cast costs nothing and goes on no cooldown. Charging for a cast that never
-	-- happened is the kind of thing players notice and never forgive.
-	-- The reason comes from inside the kit, but a caller can pass anything. Falling back keeps a
+	-- A cancelled cast goes on no cooldown, and this module charges nothing for it — but "nothing"
+	-- here is about the ABILITY: its own state and its cooldown. What the cast may already have cost
+	-- the player in resources is not this module's business, and phase 5 decided it: the cost is paid
+	-- at the activation, so an interrupted cast is a paid cast. See "An interrupted cast is a paid
+	-- cast" in PHASE_5.md before changing either half of that.
 	-- refusal explainable: a nil here reaches the player as an empty message and reads as a bug.
 	local message = self.config.MESSAGES[reason or "castInterrupted"]
 		or self.config.MESSAGES.castInterrupted

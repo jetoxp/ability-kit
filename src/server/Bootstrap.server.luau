@@ -94,31 +94,6 @@ local function ownerProxy(session, player)
 	}
 end
 
---[[
-	Death and respawn.
-
-	Three functions were written and tested for this and none of them was ever called: reset() clears
-	cooldowns and casts, refill() takes the pools back to full, clear() drops the effects. Without
-	this connection a player who dies mid-cast keeps the cooldown, the spent mana and the poison on
-	their corpse, and comes back with all three.
-]]
-local function onCharacterAdded(player, character)
-	local session = sessions[player]
-	if session == nil then
-		return
-	end
-
-	local previous = session.lastCharacter
-	if previous ~= nil and previous ~= character then
-		session.effects:clear(previous)
-	end
-	session.lastCharacter = character
-
-	session.manager:reset()
-	session.resources:refill()
-	session.effects:clear(character)
-end
-
 local function buildSession(player)
 	local adapter = EffectAdapter.new(Config)
 	local session = {
@@ -127,17 +102,8 @@ local function buildSession(player)
 		effects = EffectSystem.new(Config),
 		adapter = adapter,
 		stateClock = 0,
-		lastCharacter = nil,
 	}
 	sessions[player] = session
-
-	player.CharacterAdded:Connect(function(character)
-		onCharacterAdded(player, character)
-	end)
-	if player.Character ~= nil then
-		onCharacterAdded(player, player.Character)
-	end
-
 	return session
 end
 
@@ -156,8 +122,38 @@ local function snapshot(session)
 	return state
 end
 
+--[[
+	Death and respawn.
+
+	Three functions were written and tested for this and none of them was ever called: reset() clears
+	cooldowns and casts, refill() takes the pools back to full, clear() drops the effects. Without
+	this wiring a player who dies mid-cast keeps the cooldown, the spent mana and the poison on their
+	corpse, and comes back with all three.
+
+	Two events rather than one, because they are two different moments with two different subjects:
+	`CharacterAdded` is about the player coming back, and `CharacterRemoving` is about the character
+	going away. `CharacterRemoving` also fires while the Instance is still valid, which is what makes
+	it the right place to drop the effects — the id they are keyed by is that Instance.
+]]
 Players.PlayerAdded:Connect(function(player)
 	buildSession(player)
+
+	player.CharacterAdded:Connect(function()
+		local session = sessions[player]
+		if session ~= nil then
+			session.manager:reset()
+			session.resources:refill()
+		end
+	end)
+
+	player.CharacterRemoving:Connect(function(character)
+		local session = sessions[player]
+		if session ~= nil then
+			-- The id a target is keyed by is the character Instance, not the Player. Clearing by
+			-- player would remove nothing and leave the effects running on a corpse.
+			session.effects:clear(character)
+		end
+	end)
 end)
 
 -- And the players who are already here. A script connects PlayerAdded at the point it runs, and in
