@@ -23,6 +23,7 @@ end
 cargar("AbilityDefinition", "./AbilityDefinitionSpec")
 cargar("Ability", "./AbilitySpec")
 cargar("AbilityManager", "./AbilityManagerSpec")
+cargar("ResourceManager", "./ResourceManagerSpec")
 
 local bien = 0
 for _, ok in ipairs(todas) do
