@@ -91,7 +91,7 @@ local function ownerProxy(session, player)
 		-- reads. If this ever shows up in a profile, the fix is to describe once per character and
 		-- invalidate on CharacterAdded — not to cache blindly, because `alive` and `health.current`
 		-- are exactly the two fields a stale copy would get wrong.
-		unit = session.adapter:describe(character)
+		unit = session.adapter.describe(character)
 	end
 	return {
 		alive = unit ~= nil and unit.alive or false,
@@ -285,7 +285,7 @@ RunService.Heartbeat:Connect(function(dt)
 				local events = session.effects:applyFiring(firing, {
 					source = unit,
 					target = unit,
-					direction = session.adapter:directionOf(owner.character),
+					direction = session.adapter.directionOf(owner.character),
 				})
 				for _, event in ipairs(events) do
 					session.adapter:apply(event)
