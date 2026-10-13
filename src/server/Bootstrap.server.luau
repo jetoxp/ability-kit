@@ -35,6 +35,8 @@ local TargetResolver = require(kit.TargetResolver)
 
 local EffectAdapter =
 	require(ServerScriptService:WaitForChild("AbilityServer"):WaitForChild("EffectAdapter"))
+local TargetAdapter =
+	require(ServerScriptService:WaitForChild("AbilityServer"):WaitForChild("TargetAdapter"))
 
 -- The catalog validates as it builds, so a broken definition stops the game here rather than
 -- half-running with an ability nobody can cast. This is also where the validator gets the
