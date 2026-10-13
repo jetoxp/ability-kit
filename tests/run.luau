@@ -21,6 +21,7 @@ local function cargar(nombre, ruta)
 end
 
 cargar("AbilityDefinition", "./AbilityDefinitionSpec")
+cargar("Ability", "./AbilitySpec")
 
 local bien = 0
 for _, ok in ipairs(todas) do
