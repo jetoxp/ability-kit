@@ -42,6 +42,11 @@ It enters when a definition needs it and brings its own specification with it.
 
 - `radius == 0` → **single target**: the first hit of the raycast.
 - `radius > 0` → **every candidate inside the sphere centred on the impact point.**
+- and **the resolver always returns a list** — zero elements for a miss, one for a single-target
+  shot, N for an area. A resolver that returned `target` for one case and `targets` for the other
+  would push that special case into every caller; with a list, the caller is a loop that happens to
+  run once. The caster is inside the sphere if the impact point is close enough, because geometry
+  does not know about teams — declared here rather than discovered in a playtest.
 
 Both are stated here rather than left implicit because the first ability that needs an AoE would
 otherwise invent the rule on its own, and this project has seen how that ends.
@@ -58,11 +63,30 @@ For an ability with `targeting = "raycast"`:
 The split is by effect kind, not by ability: a raycast ability that heals heals its caster, because
 there is no such thing as healing somebody at range by looking at them.
 
-**Edge case, decided:** an ability with `targeting = "self"` whose effects include `damage` is a
-**definition error at load**. Reasoning: it is either a typo or a suicide mechanic, and a suicide
-mechanic deserves its own explicit vocabulary rather than being expressible by accident. The
-validator is where mistakes belong — the same argument as `buildCatalog` returning nil rather than a
-half-built catalog.
+**Edge case, decided, and extended to a mirror rule.** Both directions of the contradiction are
+errors at load, so the catalog is coherent whichever way a definition is written.
+
+```lua
+-- self means there is no resolved target that is not the caster, so an offensive effect in a self
+-- ability contradicts D5 rather than describing it.
+if targeting == "self" and any effect.kind in { damage, dot, debuff } -> error
+
+-- and the mirror: a raycast whose effects all land on the caster fires a ray that does nothing on
+-- contact. The ray is decorative.
+if targeting == "raycast" and no effect.kind in { damage, dot, debuff } -> error
+```
+
+The messages name the specific kind, because "invalid definition" sends the reader back to the whole
+file:
+
+```
+self-targeting ability with offensive effect 'dot': either a typo or a mechanic that needs its own name
+raycast-targeting ability with no offensive effect: the ray is decorative and the effects would go to the caster anyway
+```
+
+The argument is the same in both directions, and it is the same argument as `buildCatalog` returning
+`nil` rather than a half-built catalog: **the validator is where mistakes belong, and a mechanic that
+needs to exist deserves its own name.**
 
 ### D6. A miss is not a refusal
 
@@ -85,13 +109,24 @@ silent fallback to self.
 ## The seam, made explicit
 
 ```
-TargetResolver (pure)     receives candidates + origin + direction + range -> returns the chosen
-TargetAdapter (engine)    does the real raycast and builds units from Characters
+TargetResolver (pure)     receives candidates + origin + direction + range + radius -> a list
+TargetAdapter (engine)    DETECTION: the real raycast, and Characters into units
 EffectSystem (unchanged)  receives a target that is already resolved and does not know who chose it
 ```
 
-The wiring is **one line in the heartbeat**: where it currently reads `target = unit`, it reads the
-resolved target for offensive effects and `unit` for the rest.
+**The seam splits into detection and selection**, and that split is the reason the resolver can be
+tested with tables:
+
+- **detection** is the engine's, and it is the only part that needs a world: `workspace:Raycast`,
+  the parts it touches, and those parts' Characters turned into units;
+- **selection** is pure, and it is the whole of the rules: what is in front, what is within range,
+  which is nearest, and who is inside the sphere. It never asks where a wall is, because a candidate
+  that reached it has already been through the raycast.
+
+A firing is a single event carrying several effects, so **the Bootstrap pre-splits them** — offensive
+effects are applied to the resolved target and the rest to the caster, one `applyEffect` call each.
+That keeps `EffectSystem` unchanged, which the phase asked for; if a second reason to split appears in
+phase 7, this is the place to promote it to the effect system knowing about both targets.
 
 `TargetResolver` is testable in a terminal with tables, which is why the decision about what counts
 as a candidate lives there and not in the raycast code.
@@ -133,6 +168,10 @@ Not with a suite. With **an observed run**, as phase 5 was:
 - a **targeting refusal** visible in the Output.
 
 A phase that ends with a green suite and a silent engine is phase 4b again.
+
+The paragraph this phase opens with is worth keeping, because it is the answer to what phase 5
+taught: *"the alternative — inventing the rule at the moment it is needed, inside whatever function
+needs it — is how a kit ends up with two half-rules that disagree."*
 
 ## Process carried into this phase
 
