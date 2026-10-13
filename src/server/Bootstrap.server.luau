@@ -281,12 +281,15 @@ RunService.Heartbeat:Connect(function(dt)
 
 		for _, firing in ipairs(session.manager:advance(dt)) do
 			if unit ~= nil then
-				local rawDirection = session.adapter.directionOf(owner.character)
-				-- The resolver reads plain points; directionOf returns a Vector3, and this is the
-				-- boundary where it becomes one. The effect context keeps the Vector3, because the
-				-- adapter is the side that turns it back into a CFrame.
-				local direction = rawDirection ~= nil
-						and { x = rawDirection.X, y = rawDirection.Y, z = rawDirection.Z }
+				-- TWO SHAPES OF THE SAME DIRECTION, and they are not interchangeable:
+				--   * the Vector3 goes to the engine -- castRay multiplies it by the range and the
+				--     adapter turns it into a CFrame;
+				--   * the plain table goes to the resolver, which speaks { x, y, z }.
+				-- Passing the table to castRay threw inside the Heartbeat, and a Heartbeat handler
+				-- that throws is DISCONNECTED: the intent handler kept spending mana while nothing
+				-- ever fired again. Found by the engine, after a whole round of the suite being green.
+				local aim = session.adapter.directionOf(owner.character)
+				local direction = aim ~= nil and { x = aim.X, y = aim.Y, z = aim.Z }
 					or { x = 0, y = 0, z = 0 }
 				local definition = AbilityDefinition.get(firing.id)
 				local targeting = definition and definition.targeting or "self"
@@ -340,7 +343,7 @@ RunService.Heartbeat:Connect(function(dt)
 								local events = session.effects:applyEffect(effect, firing.id, {
 									source = unit,
 									target = target,
-									direction = direction,
+									direction = aim,
 								})
 								for _, event in ipairs(events or {}) do
 									session.adapter:apply(event)
@@ -356,7 +359,7 @@ RunService.Heartbeat:Connect(function(dt)
 							local events = session.effects:applyEffect(effect, firing.id, {
 								source = unit,
 								target = unit,
-								direction = direction,
+								direction = aim,
 							})
 							for _, event in ipairs(events or {}) do
 								session.adapter:apply(event)
