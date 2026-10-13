@@ -306,8 +306,7 @@ RunService.Heartbeat:Connect(function(dt)
 				if targeting == "raycast" then
 					local range = definition.range or 0
 					local radius = definition.radius or 0
-					local impactPoint, hit =
-						session.targets:castRay(owner.character, range, direction)
+					local impactPoint, hit = session.targets:castRay(owner.character, range, aim)
 					if impactPoint == nil then
 						-- A targeting refusal, not a miss: there is no character to shoot from, so
 						-- nothing was attempted. This is the only targeting line that logs.
