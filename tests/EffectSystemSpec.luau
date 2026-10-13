@@ -366,4 +366,48 @@ T("a dead target stops receiving ticks", function()
 	end
 end)
 
+T("refreshing a DoT resets its tick budget instead of spending the old one", function()
+	-- The bug the previous refresh test could not see: it advanced 0.5s, refreshed, and checked
+	-- remaining — never advancing AFTER the refresh, which is where the budget is spent.
+	local system = EffectSystem.new(Config)
+	apply(system, { dot(6, 4, 1) }, "POISON", dummy())
+	system:advance(3.5) -- three of the four ticks spent
+
+	apply(system, { dot(6, 4, 1) }, "POISON", dummy())
+	local events = system:advance(4)
+	local ticks = 0
+	for _, event in ipairs(events) do
+		if event.kind == "damage" then
+			ticks += 1
+		end
+	end
+	assert(ticks == 4, "a refreshed 4s effect owes 4 more ticks, dealt " .. ticks)
+end)
+
+T("refreshing a stat effect announces the end of the old one before the new one", function()
+	-- One event was not enough: the adapter mirrors the stat, so a refresh that stayed silent left
+	-- an entry in its list that no later expiry ever removed — a permanent speed change.
+	local system = EffectSystem.new(Config)
+	apply(system, { buff(1.5, 5) }, "HASTE", dummy())
+	local events = apply(system, { buff(1.5, 5) }, "HASTE", dummy())
+	assert(#events == 2, "a stat refresh is two events, got " .. #events)
+	assert(events[1].kind == "effectEnded", "the end of the old application comes first")
+	assert(events[1].multiplier == 1.5, "carrying the multiplier being ended")
+	assert(events[2].kind == "buff", "and the new application follows")
+	assert(system:hasActive("DUMMY", "HASTE"), "still one instance, refreshed")
+	assert(#system:getActiveFor("DUMMY") == 1, "and not two")
+end)
+
+T("refreshing a debuff announces its end too", function()
+	local system = EffectSystem.new(Config)
+	local slow = { kind = "debuff", stat = "speed", multiplier = 0.5, duration = 4 }
+	apply(system, { slow }, "SLOW", dummy())
+	local events = apply(system, { slow }, "SLOW", dummy())
+	assert(
+		#events == 2 and events[1].kind == "effectEnded",
+		"a debuff refresh is announced as well"
+	)
+	assert(events[2].kind == "debuff", "and re-applied as a debuff")
+end)
+
 return T.report()

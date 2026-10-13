@@ -134,15 +134,14 @@ function EffectAdapter:removeSpeedEffect(character, humanoid, multiplier)
 		return false
 	end
 
-	-- One occurrence of the multiplier the ending event carried. If it is not found, the last one
-	-- goes: an effect that ended still has to leave the list, or the character stays modified.
+	-- Exactly the multiplier the ending event carried. There is no fallback: this layer does not
+	-- decide, and "remove something anyway" is deciding. The EffectSystem announces the value it is
+	-- ending, and a game that ends an effect without one of those gets a no-op rather than a guess.
 	local index = table.find(entry.multipliers, multiplier)
 	if index == nil then
-		index = #entry.multipliers
+		return false
 	end
-	if index >= 1 then
-		table.remove(entry.multipliers, index)
-	end
+	table.remove(entry.multipliers, index)
 
 	self:recomputeSpeed(character, humanoid)
 	return true
@@ -171,6 +170,17 @@ function EffectAdapter:apply(event)
 	end
 
 	local humanoid = humanoidOf(character)
+
+	-- An end is cleanup, and cleanup cannot depend on being alive: a character that dies with a
+	-- speed effect running never gets its entry removed otherwise, and the adapter leaks a record
+	-- of a character that is gone. Handled before the health guard for that reason.
+	if event.kind == "effectEnded" then
+		if humanoid == nil or event.stat ~= "speed" then
+			return false
+		end
+		return self:removeSpeedEffect(character, humanoid, event.multiplier)
+	end
+
 	if humanoid == nil or humanoid.Health <= 0 then
 		-- Re-checked here rather than trusted from the unit: a tick of DoT can arrive on the frame
 		-- a character dies, and the unit was read before that.
@@ -207,11 +217,6 @@ function EffectAdapter:apply(event)
 		end
 		self:applySpeedEffect(character, humanoid, event.multiplier)
 		return true
-	elseif event.kind == "effectEnded" then
-		if event.stat ~= "speed" then
-			return false
-		end
-		return self:removeSpeedEffect(character, humanoid, event.multiplier)
 	end
 
 	return false

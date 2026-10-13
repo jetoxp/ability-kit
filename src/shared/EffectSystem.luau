@@ -157,14 +157,32 @@ function EffectSystem:applyEffect(effect, abilityId, context)
 		if effect.multiplier ~= nil then
 			existing.multiplier = effect.multiplier
 		end
-		-- A refreshed DoT emits nothing. Its damage comes from the ticks, and there is no amount to
-		-- hand over here: this used to emit a `damage` event with amount = nil, which reaches the
-		-- adapter as TakeDamage(nil) and crashes in Roblox. The duration extension is the whole
-		-- effect of a refresh, and the next tick arrives through advance.
+		-- A DoT refresh emits NOTHING — its damage comes from the ticks, and emitting a `damage`
+		-- event here once produced TakeDamage(nil) — but it does reset its budget. The tick counter
+		-- is per-life, so carrying it across a refresh spends the new duration's allowance: a 4s/1s
+		-- effect refreshed after 3.5s dealt one tick and expired with three stolen.
 		if effect.kind == "dot" then
+			existing.duration = effect.duration
+			existing.ticksDealt = 0
+			existing.timeToTick = math.max(effect.interval or 1, 0.001)
 			return events
 		end
 
+		-- A refresh of a STAT effect is the opposite: the engine mirrors the stat, so it has to be
+		-- told the previous application is over before the new one begins. Exactly two events, both
+		-- of which the adapter already handles. Without the effectEnded, the adapter inserted a
+		-- second entry and only ever received one removal: the list never emptied and the character
+		-- kept the multiplier permanently.
+		local previousMultiplier = existing.multiplier
+		table.insert(events, {
+			kind = "effectEnded",
+			targetId = id,
+			target = target,
+			stat = existing.stat,
+			multiplier = previousMultiplier,
+			refreshed = true,
+			abilityId = abilityId,
+		})
 		table.insert(events, {
 			kind = effect.kind == "debuff" and "debuff" or "buff",
 			target = target,
