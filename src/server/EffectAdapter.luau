@@ -20,15 +20,16 @@ function EffectAdapter.new(config)
 	assert(type(config) == "table", "EffectAdapter.new needs the config")
 	local self = setmetatable({}, EffectAdapter)
 	self.config = config
-	-- [character] = { base = WalkSpeed before the first effect, count = how many are running }
+	-- [character] = { base = WalkSpeed before the first effect, multipliers = { running ones } }
 	--
-	-- A COUNT, not a single flag. The EffectSystem allows two speed effects to stack, and with a
-	-- flag the first expiry restored the base and deleted the memory while the second was still
-	-- running: the character dropped to base speed with a buff supposedly still on, and the second
-	-- expiry then had nothing left to restore. Restoring happens when the count reaches zero.
+	-- A LIST, and this is the third attempt at it. A single flag lost the base on the first expiry.
+	-- A counter still restored the base on the first expiry while a second effect was still running,
+	-- because a counter says how many are left but not what they ask for. With the list, the speed
+	-- is recomputed from what is actually running: two 2x effects are 4x, and when one expires the
+	-- other's multiplier is still in the list and the character keeps its effect.
 	--
-	-- LIMITATION: the adapter applies the most recent multiplier, so two DIFFERENT multipliers
-	-- running at once are not composed into a product. Compose them in the game layer before here.
+	-- A Studio check caught both of the earlier versions; the pure suite could not, because this is
+	-- engine state that lives in the seam between the modules.
 	self.speedEffects = {}
 	return self
 end
@@ -91,18 +92,60 @@ function EffectAdapter.directionOf(character)
 	return flat.Unit
 end
 
+-- Recomputes WalkSpeed from the base and everything currently running. Called after any change,
+-- so there is exactly one place that writes this number and no arithmetic to keep in sync.
+function EffectAdapter:recomputeSpeed(character, humanoid)
+	local entry = self.speedEffects[character]
+	if entry == nil then
+		return
+	end
+	if #entry.multipliers == 0 then
+		-- Nothing running: back to what the character had, and forget the entry.
+		humanoid.WalkSpeed = entry.base
+		self.speedEffects[character] = nil
+		return
+	end
+
+	-- The product of what is running. Two 2x effects are 4x; a 2x and a 0.5x cancel out. A game
+	-- that wants a different rule (the strongest wins, the last wins) composes before this layer,
+	-- which is why the rule is written down here rather than implied.
+	local combined = 1
+	for _, multiplier in ipairs(entry.multipliers) do
+		combined *= multiplier
+	end
+	humanoid.WalkSpeed = entry.base * combined
+end
+
 function EffectAdapter:applySpeedEffect(character, humanoid, multiplier)
 	local entry = self.speedEffects[character]
 	if entry == nil then
-		-- The first effect remembers the speed the character had, so restoring is possible without
-		-- a definition having to carry the original.
-		entry = { base = humanoid.WalkSpeed, count = 0 }
+		-- The first effect remembers the speed the character had, so restoring needs nothing from
+		-- the definition and survives any number of effects.
+		entry = { base = humanoid.WalkSpeed, multipliers = {} }
 		self.speedEffects[character] = entry
 	end
-	entry.count += 1
-	-- Applied to the remembered base, never to the previous multiplier, so two 2x effects cannot
-	-- compound into an accidental 4x.
-	humanoid.WalkSpeed = entry.base * (multiplier or 1)
+	table.insert(entry.multipliers, multiplier or 1)
+	self:recomputeSpeed(character, humanoid)
+end
+
+function EffectAdapter:removeSpeedEffect(character, humanoid, multiplier)
+	local entry = self.speedEffects[character]
+	if entry == nil then
+		return false
+	end
+
+	-- One occurrence of the multiplier the ending event carried. If it is not found, the last one
+	-- goes: an effect that ended still has to leave the list, or the character stays modified.
+	local index = table.find(entry.multipliers, multiplier)
+	if index == nil then
+		index = #entry.multipliers
+	end
+	if index >= 1 then
+		table.remove(entry.multipliers, index)
+	end
+
+	self:recomputeSpeed(character, humanoid)
+	return true
 end
 
 --[[
@@ -168,18 +211,7 @@ function EffectAdapter:apply(event)
 		if event.stat ~= "speed" then
 			return false
 		end
-		local entry = self.speedEffects[character]
-		if entry == nil then
-			return false
-		end
-		entry.count -= 1
-		-- Only the LAST running effect restores. Doing it on the first one is how a character ends
-		-- up at base speed while a buff is still supposed to be on.
-		humanoid.WalkSpeed = entry.base
-		if entry.count <= 0 then
-			self.speedEffects[character] = nil
-		end
-		return true
+		return self:removeSpeedEffect(character, humanoid, event.multiplier)
 	end
 
 	return false

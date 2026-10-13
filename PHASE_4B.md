@@ -925,20 +925,23 @@ ADAPTADOR CARGADO desde ServerScriptService ✓
   damage 30   -> Health = 70
   heal 100    -> Health = 100  (cap at MaxHealth=100)
   buff x2     -> WalkSpeed = 32   (base was 16)
-  2nd buff x3 -> WalkSpeed = 48   (base*3, NOT base*2*3)
   effectEnded -> WalkSpeed = 16   (back to the base)
   dash 32     -> 0, 10, 0  ->  0, 10, -32
   throwaway model destroyed: true  (Workspace clean)
 ```
 
-Three of those lines are the ones that matter:
+And a second check, for the case the first one could not see — **two speed effects running at once**,
+through the real EffectSystem and the real adapter:
 
-- **the second speed buff gives 48, not 96.** Each multiplier is applied to the speed the
-  character had before the *first* effect, not to the result of the one before it. Multiplying
-  on top of an already-modified value turns two speed buffs into a bug nobody can find.
-- **the heal caps at MaxHealth.** 100 onto 70 returns 100, not 170.
-- **the dash covered exactly 32 studs** along the character's facing. The distance came from the
-  definition, the direction from the caster's CFrame, and neither from a client.
+```
+base WalkSpeed = 16
+buff A x2   -> 32        one running
+buff B x3   -> 96        two running: the product, 2 x 3 = 6
+expires A   -> 48        B is still running, so 3x remains
+expires B   -> 16        now, and only now, the base
+live effects at the end: 0
+throwaway model destroyed: true
+```
 
 And nothing was left behind: the model is destroyed and `Parent == nil` is checked before the
 result is returned. The only change to the place was Rojo adding `EffectAdapter` under
@@ -976,11 +979,39 @@ it. Engine state, kept in the engine layer, which is why it is not in the Effect
 
 ## The numbers
 
-- Tests: **164** across 5 suites — AbilityDefinitionSpec 42 · AbilitySpec 34 · AbilityManagerSpec 35 · ResourceManagerSpec 30 · EffectSystemSpec 23
-- Lines: **2080 source + 1987 tests** = 4067 (the adapter is 179 of the source)
-- Commits: **20**
+- Tests: **169** across 5 suites — AbilityDefinitionSpec 40 · AbilitySpec 34 · AbilityManagerSpec 35 · ResourceManagerSpec 30 · EffectSystemSpec 28
+- Lines: **2157 source + 2057 tests** = 4214 (the adapter is 231 of the source)
+- Commits: **22**
 - selene: 0 errors, 0 warnings · stylua: clean
-- Studio check: passed, against a real Humanoid, with nothing left in the place
+- Studio check: passed twice, against a real Humanoid, with nothing left in the place
+
+## What the review found, and what it cost to accept
+
+Four findings, all correct, and the first two were the most embarrassing kind: **bugs the code's own
+comments promised were fixed.**
+
+| # | Finding | Shape |
+|---|---------|-------|
+| 1 | a DoT advanced by 5 seconds dealt 5 ticks instead of 2 — the catch-up window was unbounded | a claim the code did not keep |
+| 2 | refreshing a DoT emitted a `damage` event with `amount = nil`, which reaches the adapter as `TakeDamage(nil)` | an event shaped like another one |
+| 3 | two stacked speed buffs restored wrongly: the first expiry dropped the character to base while the second was still running | a rule that spans objects, in the layer that cannot see them |
+| 4 | the pure system kept ticking for a target that died mid-effect | a guard on one path, not the other |
+
+The comment on finding 1 read *"a 6-damage-per-second effect lasting two seconds owes two ticks"*,
+and the code gave five on a large `dt`. The suite did not catch it because **every DoT case used a
+`dt` smaller than `remaining`** — the window was never the constraint. The test that was supposed to
+cover the catch-up used `dt = 3.5` against a duration of 4.
+
+Finding 3 is the one with a lesson attached. It lives in **the seam between the two modules**: the
+EffectSystem knows how many instances are running, the adapter knows what the engine needs, and
+neither test suite crosses that line. The spec tests stacking without an adapter; the Studio check
+tested the adapter without stacking. **The fix took three attempts** — a flag, then a counter, then
+the list of multipliers it needed — and only the Studio check could tell them apart, because the
+state being restored is engine state.
+
+That is the honest limit of the pure/adapter split: it catches what lives on either side, not what
+lives between them. The answer is not a cleverer split, it is **a check that crosses the seam**, and
+that is what the second block above is.
 
 ## What is left in this phase
 
