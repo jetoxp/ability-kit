@@ -23,7 +23,27 @@ local Net = require(kit.Net)
 -- phase 5 left a note that a module requiring ClientState earlier in the load order sees `nil`, and
 -- the HUD is the consumer that note was written for. Requiring the HUD first would work today and
 -- would be the kind of order that breaks on the day somebody moves a line.
+--[[
+	THE VERSION MARKER, and it is the client's half of the bootstrap's startup line.
+
+	Phase 5 learned that a script which does not announce itself cannot be diagnosed; this is the same
+	rule one layer out, and it answers a question that cost two playtests: *is the file running the one
+	I think is running?* A place that has accumulated instances from previous syncs will happily run a
+	copy of an old client, and the only symptom is behaviour that makes no sense against the source.
+
+	Bump this whenever this file is touched. If the attribute is absent, or older than the file, the
+	script running is not the file in the repository.
+]]
+local VERSION = "p7.5"
+
 local player = Players.LocalPlayer
+print(string.format("[ability-kit] client up: %s", VERSION))
+
+-- Where am I, and what am I talking to. Both as attributes, because the client's Output is not
+-- readable from outside this session and an unreadable diagnostic is not one.
+player:SetAttribute("abilityKitClientVersion", VERSION)
+player:SetAttribute("abilityKitClientPath", script:GetFullName())
+
 local ClientState = require(script.Parent.ClientState)
 ClientState.changed = Instance.new("BindableEvent")
 
@@ -37,6 +57,11 @@ local Catalog = require(kit.abilities)
 local netFolder = ReplicatedStorage:WaitForChild(Net.FOLDER)
 local intentRemote = netFolder:WaitForChild(Net.INTENT)
 local stateRemote = netFolder:WaitForChild(Net.STATE)
+player:SetAttribute("abilityKitStateRemote", stateRemote:GetFullName())
+player:SetAttribute(
+	"abilityKitStateRemoteParent",
+	stateRemote.Parent and stateRemote.Parent:GetFullName() or "nil"
+)
 
 --[[
 	The state handler, wrapped, and for the same reason the server's heartbeat is: **a callback that
