@@ -38,8 +38,24 @@ local netFolder = ReplicatedStorage:WaitForChild(Net.FOLDER)
 local intentRemote = netFolder:WaitForChild(Net.INTENT)
 local stateRemote = netFolder:WaitForChild(Net.STATE)
 
+--[[
+	The state handler, wrapped, and for the same reason the server's heartbeat is: **a callback that
+	throws is disconnected.** A single error in here — in the state itself, or in anything listening to
+	`changed`, which fires from inside this callback — kills the connection on the first snapshot and
+	the client then receives nothing for the rest of the session, silently. The failure looks exactly
+	like a server that stopped talking.
+
+	That is not a hypothetical: it is what happened, and it took a listener on the same remote from
+	outside the script to prove the server was talking the whole time. The error is logged loudly
+	because the alternative is a client that has stopped listening and does not say so.
+]]
 stateRemote.OnClientEvent:Connect(function(state)
-	ClientState.set(state)
+	local ok, err = pcall(function()
+		ClientState.set(state)
+	end)
+	if not ok then
+		warn(string.format("[ability-kit] the state handler failed: %s", tostring(err)))
+	end
 end)
 
 -- The slots are the keybinds. One, two, three, four — and nothing more clever than that, because
