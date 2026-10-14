@@ -6,7 +6,7 @@ not code: there is no `if id == "FIREBALL"` anywhere in the kit, and the validat
 that contradicts itself at load rather than at runtime.
 
 Most ability frameworks put the decision and the engine call in the same function, which means the only
-way to test a cooldown is to open Studio. Here the split is the point: 208 test cases run in a few
+way to test a cooldown is to open Studio. Here the split is the point: 225 test cases run in a few
 seconds without Roblox, and the two adapters that do touch the engine are small enough to audit by eye.
 
 ## What it does
@@ -28,6 +28,9 @@ Straight from the code, not from a roadmap:
   (`Config.STATE_FIELDS`).
 - **Server-authoritative composition** — the client sends one thing and only one thing:
   `{ action = "activate", slot = N }`.
+- **A HUD with a pure presenter** — the client interpolates between the last two snapshots and draws
+  bars, slot labels and keybinds. `HudPresenter` is pure Luau with its own suite; `HudRenderer` only
+  assigns values to properties. The numbers on screen are decided by code you can run in a terminal.
 
 ## Architecture
 
@@ -52,7 +55,11 @@ Straight from the code, not from a roadmap:
                                                                                |
                       State (remote) <-----------------------------------------+
                              |
-                       ClientState  (the last snapshot; nothing draws it yet)
+                       ClientState  (the last two snapshots)
+                             |
+                       HudPresenter (pure: two snapshots -> a description)
+                             |
+                       HudRenderer  (dumb: a description -> frames and labels)
 ```
 
 One line each, including what it does **not** do:
@@ -70,7 +77,9 @@ One line each, including what it does **not** do:
 | `EffectAdapter` | Humanoid damage/heal, WalkSpeed, dash displacement | Decide anything |
 | `TargetAdapter` | The raycast, the impact point, Characters into units | Choose the target |
 | `Bootstrap` | Composition root: builds sessions, answers intents, runs one heartbeat | Contain gameplay rules |
-| `AbilityClient` / `ClientState` | Sends an intent on a keypress; keeps the last snapshot | Check a cooldown, know a cost, or draw anything |
+| `AbilityClient` / `ClientState` | Sends an intent on a keypress; keeps the last two snapshots | Check a cooldown, know a cost, or draw anything |
+| `HudPresenter` | Turns two snapshots and an elapsed time into a description of what to draw | Touch a frame, decide a size, or read the clock |
+| `HudRenderer` | Puts the numbers in the description onto labels and bars | Interpolate, derive, or decide when something is ready |
 
 ## The seam
 
@@ -78,7 +87,7 @@ One line each, including what it does **not** do:
 the engine is thin.** Two consequences, and the second is the interesting one.
 
 The pure modules have no `require` of each other — config and catalog are injected at `init()` — so each
-one can be tested alone with plain tables. 208 cases cover them, including the ones written for bugs
+one can be tested alone with plain tables. 225 cases cover them, including the ones written for bugs
 that were found in Studio and then pinned in the suite so they cannot come back.
 
 **And the bugs that matter live in the seam.** Not in the pure logic, which is covered, and not in the
@@ -97,7 +106,7 @@ construction because the test speaks plain tables and the boundary is the thing 
 No external dependencies, no packages, no Studio required for the test suite.
 
 ```bash
-luau tests/run.luau          # 208 cases across 7 suites
+luau tests/run.luau          # 225 cases across 8 suites
 selene src/ tests/           # 0 errors, 0 warnings
 stylua --check src/ tests/   # prints nothing
 ```
@@ -117,13 +126,22 @@ want to read the code.
 [ability-kit] bootstrap up: 4 abilities in the catalog, 4 equipped by default
 ```
 
-4. Press `1` to `4` to activate the loadout. The snapshot arrives at the client and `ClientState.latest`
-   holds it — nothing draws it yet, and reading that table is how you inspect the kit from a playtest.
+4. Press `1` to `4` to activate the loadout. The snapshot arrives at the client, `ClientState` keeps
+   the last two of them, and the HUD redraws:
+   the mana bar falls on the activation, a cast bar fills and disappears, and the slot you used refills
+   with its cooldown. The client's Output also prints one line at startup, which is how a playtest tells
+   you *which build is running* — `[ability-kit] client up: p7.6`.
 
 ## Verified in engine
 
 The list below is observed behaviour from a live playtest, not intended behaviour. Each line is a run
-whose output is quoted in `PHASE_5.md` and `PHASE_6.md`:
+whose output is quoted in `PHASE_5.md`, `PHASE_6.md` and `PHASE_7.md`.
+
+**A caveat that belongs at the top of the list rather than the bottom:** every observation in phases 5
+and 6 was made from server-side probes — the playtest's own client script was assumed to be working, and
+it was never exercised. Phase 7 found that out by measuring its own client wiring, and the wiring turned
+out to be healthy. The caveat stays: evidence about the server is not evidence about the client, and the
+only honest way to write the first as the second is to say so.
 
 - **A single-target ability damages another character at distance**, and the caster's own health does not
   change — the second half is the one that proves the fix rather than the symptom.
@@ -135,13 +153,21 @@ whose output is quoted in `PHASE_5.md` and `PHASE_6.md`:
 - **A second activation is refused by the cooldown without charging again.**
 - **Death restores the pools and clears the cooldowns**, and drops the effects attached to the character
   that died.
+- **The HUD draws the four slots with their keybinds, and its numbers track the snapshot**: with the
+  server reporting mana at `82.74`, the mana bar's fill reads `0.82` — equal or behind, never ahead.
+- **Activating moves the screen**: the mana bar falls on the activation, a cast bar fills and disappears
+  at the end of the cast, and the slot's bar refills with the cooldown.
 
 ## Known limitations
 
 Declared rather than discovered:
 
-- **There is no UI.** The client sends intents and keeps the last snapshot; nothing draws it. The kit is
-  complete without one, and a HUD is a small file that reads `ClientState`.
+- **The HUD shows, it does not let you configure.** No rebindable keys, no effect icons with
+  durations, and no damage numbers: the client has no effect state, and inventing one client-side would
+  be a second source of truth.
+- **The HUD interpolates between the last two snapshots, so it lags up to one tick behind** — never
+  ahead. That asymmetry is deliberate: a value that is behind is honest, and a value that runs ahead of
+  the server is a bug the suite now pins.
 - **Targeting does not accept client-supplied references.** Only the server's raycast from the caster's
   facing direction. The alternative — the client names a target and the server validates it — is a
   deliberate non-goal for now, because the validation is the whole difficulty.
@@ -155,7 +181,7 @@ Declared rather than discovered:
   that hits nothing produces no damage event and a heal on the caster. That follows from "each effect
   decides its target by kind", and making the heal contingent on the hit would drag a hit/miss signal
   into the effect system.
-- **The two adapters have no test suite and cannot have one.** That is the price of the other seven
+- **The two adapters have no test suite and cannot have one.** That is the price of the other eight
   modules having one.
 
 ## Out of scope
@@ -173,7 +199,7 @@ What the kit does not do, and why, so that a reader can tell a decision from an 
 
 ## Lessons
 
-The five that cost the most, each with the bug that produced it. They are here rather than only in the
+The six that cost the most, each with the bug that produced it. They are here rather than only in the
 phase notes because they are the transferable part.
 
 **An early return with no log is indistinguishable from nothing having happened.** A `PlayerAdded`
@@ -185,7 +211,7 @@ logs nothing, because a line per shot is a log nobody reads.
 **A promise about the seam that nobody executes is indistinguishable from a promise nobody wrote.** The
 documentation had said "the adapter converts" since the effects layer was written. The adapter handed the
 pure resolver a `Vector3` where it expected `{ x, y, z }`, the resolver rejected every candidate it was
-given, and the shot resolved to nobody — with a green suite of 208 cases, because the suite is written
+given, and the shot resolved to nobody — with a green suite of 225 cases, because the suite is written
 against the contract and therefore cannot catch the boundary failing to honour it.
 
 **A Heartbeat connection that errors is disconnected, and a disconnected Heartbeat is a game that spends
@@ -208,6 +234,16 @@ not catch it?* **Because the test and the code shared one reading of the problem
 from the same head that wrote the function does not verify the function; it verifies the
 misunderstanding, and files it as evidence.
 
+**A callback that never fires is indistinguishable from one connected to something that never
+arrives, and a measurement taken while you edit the thing you measure is a measurement of two things.**
+Phase 7 spent five playtests on a HUD that turned out to be correct from the commit that wrote it: the
+client script was fine, the renderer was fine, and every contradiction came from editing and re-syncing
+the project *while playtests were running*, so the script and the probe were always one generation
+apart. It was the phase that was predicted to earn a line in "What it does" without earning one in
+"Lessons", and it earned three. **The prediction was written down and it was wrong**, which is the point
+of writing predictions down. The bug was in the laboratory, not the kit — a class the other entries in
+this list do not contain, and the discipline that catches it is the same one.
+
 And a smaller one, in the same family. **A gate that reports a count without a name is a promise closed
 without saying what it promised.** The quality gate reported `0 errors, 1 warning` for several rounds,
 and the warning was a number with no noun: naming it as `unused_variable: hit` was the fix, and the
@@ -222,13 +258,15 @@ src/shared/     pure modules, testable in a terminal: Config, AbilityDefinition,
 src/server/     the only files that touch the engine: Bootstrap (composition root),
                 EffectAdapter, TargetAdapter
 src/client/     a keypress becomes an intent, and ClientState holds the last snapshot
-tests/          seven Luau suites, a shared test kit, and the runner (only the seven
-                Spec files are suites); no Studio needed
+tests/          eight Luau suites (the eighth is HudPresenterSpec, so the HUD's
+                arithmetic is covered without a screen), a shared test kit, and the
+                runner; no Studio needed
 PHASE_*.md      the working notes of each phase, in order, including the bugs and the
                 corrections they forced. The two most recent are the ones worth reading
-                for how the seam behaves: PHASE_5.md (the wire and the boot) and
+                for how the seam behaves: PHASE_5.md (the wire and the boot),
                 PHASE_6.md (targeting, and four bugs the engine found that the suite
-                could not)
+                could not), and PHASE_7.md (the HUD, and five playtests spent
+                diagnosing the measurement rather than the code)
 ```
 
 ## License

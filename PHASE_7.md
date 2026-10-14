@@ -174,7 +174,81 @@ silence. Every callback that carries state now says whether it ran.
 which let the README contradict itself for a few minutes. Both were caught by reading, not by a gate,
 and personal discipline has a ceiling that has now been touched twice.
 
-The structural fix is a CI workflow — thirty lines running `luau tests/run.luau`, `selene` and
-`stylua --check` on every push — so that the README cannot be wrong for even a minute and the gate does
-not depend on anybody having a good day. **Not this phase: the week the project consolidates.** It is
-written down here because it answers the pattern rather than the incident.
+The structural fix is a CI workflow running `luau tests/run.luau`, `selene` and `stylua --check` on
+every push, so that the README cannot be wrong for even a minute and the gate does not depend on
+anybody having a good day. It was written down here as "the week the project consolidates", and that
+week was this one: `.github/workflows/ci.yml`, thirty-odd lines, pinned to the same tool versions the
+project is developed against. **A lesson that stays a discipline is a lesson on a deadline.**
+
+## The close, with the outputs
+
+The phase that took the most playtests ends with the least dramatic evidence, which is the point:
+
+```
+GATE(a) version al empezar : p7.6
+snapshots por mi conexion  : 15   |  recibidos por el script: 86
+GATE(b) version al terminar: p7.6 -> ESTABLE, la medicion vale
+
+pantalla antes   : mana [relleno 1]     | slot1 [0.25] "1  Fireball" | slot2 "2  Poison" | ...
+pantalla durante : mana [0.91] | Frame [0.21]      <- la barra de cast
+pantalla despues : mana [0.82] | Frame [0.9]       <- el cooldown rellenandose
+snapshot         : mana=82.74 | cd slot1=2.11
+```
+
+Three criteria, each with its number:
+
+1. **The mana falls on the activation** — `1.0 -> 0.91 -> 0.82` with regeneration, and the bar follows.
+2. **The cast bar** — a fill appears at `0.21` during the cast and disappears.
+3. **HUD against snapshot** — the bar reads `0.82` against the snapshot's `82.74/100 = 0.827`: equal or
+   behind, never ahead. That is the directional tolerance written before the code, and it is what makes
+   the comparison a check rather than a glance.
+
+## Three modes of silence, and what the unit of debugging is
+
+Phase 6 learned it once, on the server's heartbeat: **an exception inside a callback disconnects it, and
+the failure mode is silence.** This phase paid for it twice more, one layer out each time, and the three
+cases do not look alike from the outside:
+
+| Mode | What happened | How it was distinguished |
+|---|---|---|
+| Never connected | Ordering: the handler was connected after the thing that fires it | The code ran to the end and the counter stayed at zero |
+| Connected and dead | An exception inside `OnClientEvent` killed the connection on the first snapshot | A counter incremented in the handler's first line |
+| Connected to the wrong identity | The module the script writes and the module a probe reads were two instances, two tables, two states | A `tostring` of the table, published as an attribute |
+
+The general rule is not "wrap things in `pcall`". It is: **a callback that never fires is
+indistinguishable from one connected to something that never arrives, and the unit of debugging is the
+target of the callback, not its body.** A probe on the same remote, attached from outside the script,
+is what separates "the server stopped talking" from "this connection is not the one receiving".
+
+## The double gate
+
+Rojo syncs instance by instance, not atomically: a LocalScript and its sibling ModuleScript are two
+instances with two sync lives, and a script can run holding the previous generation of the module it
+requires. That is how the contradiction at the end of this phase resolved — the script published `p7.6`
+while its own module answered `received = 0`, and both readings were true about different instances.
+
+So a version read once is not a version. **The gate reads it at the start and at the end of the probe
+and requires them to agree**; the cheap rule underneath it is to freeze: *between the last sync and the
+run, do not touch the tree.* A probe measures one thing when the thing measured holds still. **If you
+move what you measure, you measure the movement.**
+
+## The refraction: the bug was the laboratory
+
+Five playtests, four instruments, three ghost hypotheses — and the client script was almost certainly
+correct from the commit that wrote it. The bug was not in the presenter, not in the renderer, not in the
+wire: it was in the measurement environment, because the project was being edited and re-synced while
+playtests were running, so the script and the probe were always a generation apart.
+
+This is a different class from the four boundary bugs in the README's table, which were product bugs.
+Both are expensive, both are found by the same discipline, and only one of them is fixed by changing
+code: **not every expensive bug is in the code, and some are in the environment you measure it in.**
+
+It also revises, with more maturity, the line this project has been telling itself since phase 1 — *the
+engine found four bugs and the document found none.* **The engine also finds bugs that do not exist,
+when the observer moves the telescope.**
+
+And the failed prediction, which belongs here rather than in a footnote: phase 7 was written up as the
+one phase expected to earn an entry in "What it does" without earning one in "Lessons". It earned
+three. The prediction was recorded before the work, which is the only reason it counts as a prediction
+rather than an excuse — **predictions here are also measured.**
+
