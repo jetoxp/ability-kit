@@ -154,3 +154,27 @@ side. The same table applies to the mana bar: equal or behind, never ahead.
 - **Rebindable keys** — see D5.
 - **Any HUD logic that the server could do** — if a value can be computed once on the server, the client
   draws a number rather than deriving it.
+
+## Two notes for the phase's close
+
+**A rule that has now bitten twice, one layer apart.** `Un error dentro de un callback lo desconecta`
+was learned on the server's heartbeat in phase 6: a bad argument threw inside the tick, Roblox dropped
+the connection, and the game spent mana while nothing ever fired. This phase paid for the same rule one
+layer out: an exception inside the client's `OnClientEvent` killed the state connection on the first
+snapshot, and the client then received nothing for the rest of the session — **which looks exactly like
+a server that stopped talking.** It took a listener on the same remote, attached from outside the
+script, to prove the server had been talking at 10 Hz the whole time.
+
+The rule, stated so it stops being rediscovered: **a callback is not a function call.** An exception in
+a function returns to its caller; an exception in a callback disconnects it, and the failure mode is
+silence. Every callback that carries state now says whether it ran.
+
+**And the process answer, which is not a discipline.** Writing this phase went through two failures of
+*personal* process — remembered text anchors in phase 4b, and pushing with eleven warnings in this one,
+which let the README contradict itself for a few minutes. Both were caught by reading, not by a gate,
+and personal discipline has a ceiling that has now been touched twice.
+
+The structural fix is a CI workflow — thirty lines running `luau tests/run.luau`, `selene` and
+`stylua --check` on every push — so that the README cannot be wrong for even a minute and the gate does
+not depend on anybody having a good day. **Not this phase: the week the project consolidates.** It is
+written down here because it answers the pattern rather than the incident.
