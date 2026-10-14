@@ -19,7 +19,7 @@ local function fill(parent, colour)
 	local bar = Instance.new("Frame")
 	bar.BackgroundColor3 = colour
 	bar.BorderSizePixel = 0
-	bar.Size = UDim2.new(0, 0, 1, 0)
+	bar.Size = UDim2.fromScale(0, 1)
 	bar.Parent = parent
 	return bar
 end
@@ -37,7 +37,7 @@ function HudRenderer.new(parent)
 	local root = Instance.new("Frame")
 	root.AnchorPoint = Vector2.new(0.5, 1)
 	root.Position = UDim2.new(0.5, 0, 1, -16)
-	root.Size = UDim2.new(0, 420, 0, 96)
+	root.Size = UDim2.fromOffset(420, 96)
 	root.BackgroundTransparency = 1
 	root.Parent = gui
 	self.root = root
@@ -50,7 +50,7 @@ function HudRenderer.new(parent)
 
 	local slotBox = Instance.new("Frame")
 	slotBox.BackgroundTransparency = 1
-	slotBox.Position = UDim2.new(0, 0, 0, 40)
+	slotBox.Position = UDim2.fromOffset(0, 40)
 	slotBox.Size = UDim2.new(1, 0, 0, 40)
 	slotBox.Parent = root
 	self.slotBox = slotBox
@@ -58,7 +58,7 @@ function HudRenderer.new(parent)
 	local castBox = Instance.new("Frame")
 	castBox.BackgroundColor3 = Color3.fromRGB(24, 24, 28)
 	castBox.BorderSizePixel = 0
-	castBox.Position = UDim2.new(0, 0, 0, 84)
+	castBox.Position = UDim2.fromOffset(0, 84)
 	castBox.Size = UDim2.new(1, 0, 0, 8)
 	castBox.Visible = false
 	castBox.Parent = root
@@ -79,7 +79,7 @@ function HudRenderer:pool(name)
 	box.Name = name
 	box.BackgroundColor3 = Color3.fromRGB(24, 24, 28)
 	box.BorderSizePixel = 0
-	box.Position = UDim2.new(0, 0, 0, #self.pools * 16)
+	box.Position = UDim2.fromOffset(0, #self.pools * 16)
 	box.Size = UDim2.new(1, 0, 0, 12)
 	box.Parent = self.poolBox
 	row = { fill = fill(box, Color3.fromRGB(90, 150, 240)) }
@@ -106,8 +106,8 @@ function HudRenderer:slot(index)
 	overlay.BackgroundTransparency = 0.35
 	overlay.BorderSizePixel = 0
 	overlay.AnchorPoint = Vector2.new(0, 1)
-	overlay.Position = UDim2.new(0, 0, 1, 0)
-	overlay.Size = UDim2.new(1, 0, 0, 0)
+	overlay.Position = UDim2.fromScale(0, 1)
+	overlay.Size = UDim2.fromScale(1, 0)
 	overlay.Parent = frame
 
 	local label = Instance.new("TextLabel")
@@ -117,7 +117,7 @@ function HudRenderer:slot(index)
 	label.TextColor3 = Color3.fromRGB(235, 235, 240)
 	label.TextXAlignment = Enum.TextXAlignment.Left
 	label.TextYAlignment = Enum.TextYAlignment.Top
-	label.Position = UDim2.new(0, 4, 0, 2)
+	label.Position = UDim2.fromOffset(4, 2)
 	label.Size = UDim2.new(1, -8, 1, -4)
 	label.Text = ""
 	label.Parent = frame
@@ -137,7 +137,7 @@ end
 function HudRenderer:render(description)
 	for _, pool in ipairs(description.resources) do
 		local row = self:pool(pool.name)
-		row.fill.Size = UDim2.new(pool.fraction, 0, 1, 0)
+		row.fill.Size = UDim2.fromScale(pool.fraction, 1)
 	end
 
 	for index = 1, math.max(4, #description.slots) do
@@ -145,7 +145,7 @@ function HudRenderer:render(description)
 		local slot = description.slots[index]
 		if slot ~= nil then
 			box.frame.Visible = true
-			box.overlay.Size = UDim2.new(1, 0, slot.fraction, 0)
+			box.overlay.Size = UDim2.fromScale(1, slot.fraction)
 			box.label.Text = tostring(slot.slot) .. "  " .. (slot.name or slot.id or "")
 			box.label.TextTransparency = slot.ready and 0 or 0.45
 		else
@@ -156,7 +156,7 @@ function HudRenderer:render(description)
 	local cast = description.cast
 	self.castBox.Visible = cast ~= nil
 	if cast ~= nil then
-		self.castFill.Size = UDim2.new(cast.progress, 0, 1, 0)
+		self.castFill.Size = UDim2.fromScale(cast.progress, 1)
 	end
 end
 
