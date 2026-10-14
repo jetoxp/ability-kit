@@ -55,6 +55,7 @@ stateRemote.OnClientEvent:Connect(function(state)
 		ClientState.set(state)
 	end)
 	if not ok then
+		ClientState.lastError = tostring(err)
 		warn(string.format("[ability-kit] the state handler failed: %s", tostring(err)))
 	end
 end)

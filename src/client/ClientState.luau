@@ -37,6 +37,12 @@ ClientState.previous = nil
 	identical from the outside and need different fixes.
 ]]
 ClientState.received = 0
+
+-- The last error the state handler caught, as a string. It lives here for the same reason the counter
+-- does: a `warn` goes to an Output this project's tooling cannot read, so a caught error that is only
+-- warned about is an error nobody will ever see. **Observable where it is raised, or it did not
+-- happen.**
+ClientState.lastError = nil
 ClientState.changed = nil -- a BindableEvent, created by the client script, for whatever draws this
 
 function ClientState.set(state)
