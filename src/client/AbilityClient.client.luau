@@ -34,7 +34,7 @@ local Net = require(kit.Net)
 	Bump this whenever this file is touched. If the attribute is absent, or older than the file, the
 	script running is not the file in the repository.
 ]]
-local VERSION = "p7.5"
+local VERSION = "p7.6"
 
 local player = Players.LocalPlayer
 print(string.format("[ability-kit] client up: %s", VERSION))
@@ -45,6 +45,23 @@ player:SetAttribute("abilityKitClientVersion", VERSION)
 player:SetAttribute("abilityKitClientPath", script:GetFullName())
 
 local ClientState = require(script.Parent.ClientState)
+
+--[[
+	THE ONLY QUESTION LEFT: are these the same table?
+
+	This directory was read, at the top, for the version marker, and the file is the current one. And
+	yet the handler in this script increments a counter 133 times while the same module, required from
+	the same path by a probe, reports zero. `require` caches per INSTANCE, so two instances of a module
+	are two tables with two states and no exception to warn anybody.
+
+	An attribute because it is the only channel that survives between the two virtual machines: a print
+	goes to an Output that cannot be read from outside, and a module field is exactly what is in doubt.
+
+	The identity string is `tostring` of the table: it is not stable across sessions, and it does not
+	need to be. The probe prints its own and writes it to the same place; equal or not equal is the
+	whole answer.
+]]
+player:SetAttribute("abilityKitClientStateId", tostring(ClientState))
 ClientState.changed = Instance.new("BindableEvent")
 
 local HudPresenter = require(script.Parent.HudPresenter)
