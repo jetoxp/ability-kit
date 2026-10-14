@@ -272,7 +272,29 @@ end)
 	here, so there is exactly one place where time passes. Effects are handed to the adapter, which
 	translates and does not decide.
 ]]
+--[[
+	One line of diagnosis, and it is the phase 5 lesson applied to the state path: a heartbeat that
+	says nothing cannot be told apart from a heartbeat that is not running. The count is printed on the
+	first tick and whenever it changes, so a playtest answers "did the session exist" without a probe.
+]]
+local lastSessionCount = -1
+
 RunService.Heartbeat:Connect(function(dt)
+	local sessionCount = 0
+	for _ in pairs(sessions) do
+		sessionCount += 1
+	end
+	if sessionCount ~= lastSessionCount then
+		lastSessionCount = sessionCount
+		print(
+			string.format(
+				"[ability-kit] heartbeat: %d session(s), state goes out every %.0f ms",
+				sessionCount,
+				STATE_INTERVAL * 1000
+			)
+		)
+	end
+
 	for player, session in pairs(sessions) do
 		local ok, err = pcall(function()
 			local owner = ownerProxy(session, player)
