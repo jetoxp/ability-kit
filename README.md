@@ -9,6 +9,8 @@ Most ability frameworks put the decision and the engine call in the same functio
 way to test a cooldown is to open Studio. Here the split is the point: 225 test cases run in a few
 seconds without Roblox, and the two adapters that do touch the engine are small enough to audit by eye.
 
+![The HUD: four slots with their keybinds, and the mana bar, drawn from the snapshot by a presenter with no engine access](media/hud.jpg)
+
 ## What it does
 
 Straight from the code, not from a roadmap:
@@ -135,7 +137,8 @@ want to read the code.
 ## Verified in engine
 
 The list below is observed behaviour from a live playtest, not intended behaviour. Each line is a run
-whose output is quoted in `PHASE_5.md`, `PHASE_6.md` and `PHASE_7.md`.
+whose output is quoted in [`docs/phases/PHASE_5.md`](docs/phases/PHASE_5.md),
+[`PHASE_6.md`](docs/phases/PHASE_6.md) and [`PHASE_7.md`](docs/phases/PHASE_7.md).
 
 **A caveat that belongs at the top of the list rather than the bottom:** every observation in phases 5
 and 6 was made from server-side probes — the playtest's own client script was assumed to be working, and
@@ -237,7 +240,7 @@ The definition validator was supposed to refuse two abilities sharing an id. It 
 the table key as the identity, and a table key is unique by construction, so the collision check was
 dead code that could never fire. Its test built the input the same way — indexing by the same key — so
 it passed for exactly the same wrong reason, and stayed green. This is the most uncomfortable of the
-five, because it is the one that answers the question a reviewer is actually asking: *why did the tests
+six, because it is the one that answers the question a reviewer is actually asking: *why did the tests
 not catch it?* **Because the test and the code shared one reading of the problem.** Writing the test
 from the same head that wrote the function does not verify the function; it verifies the
 misunderstanding, and files it as evidence.
@@ -265,16 +268,20 @@ src/shared/     pure modules, testable in a terminal: Config, AbilityDefinition,
                 Net, the default loadout, and the four sample abilities
 src/server/     the only files that touch the engine: Bootstrap (composition root),
                 EffectAdapter, TargetAdapter
-src/client/     a keypress becomes an intent, and ClientState holds the last snapshot
+src/client/     a keypress becomes an intent, and ClientState keeps the last two
+                snapshots for the HUD to interpolate between
 tests/          eight Luau suites (the eighth is HudPresenterSpec, so the HUD's
                 arithmetic is covered without a screen), a shared test kit, and the
                 runner; no Studio needed
-PHASE_*.md      the working notes of each phase, in order, including the bugs and the
-                corrections they forced. The two most recent are the ones worth reading
-                for how the seam behaves: PHASE_5.md (the wire and the boot),
-                PHASE_6.md (targeting, and four bugs the engine found that the suite
-                could not), and PHASE_7.md (the HUD, and five playtests spent
-                diagnosing the measurement rather than the code)
+docs/phases/    the working notes of each phase, in order, including the bugs and the
+                corrections they forced. Start with the three most recent, which are the
+                ones worth reading for how the seam behaves: PHASE_5.md (the wire and the
+                boot), PHASE_6.md (targeting, and four bugs the engine found that the
+                suite could not), and PHASE_7.md (the HUD, and five playtests spent
+                diagnosing the measurement rather than the code). They are historical:
+                where a note and this README disagree, the README is current — see
+                docs/phases/README.md
+media/          the HUD, as it looks in a test place
 ```
 
 ## License
