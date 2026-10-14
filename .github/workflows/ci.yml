@@ -1,0 +1,39 @@
+name: ci
+
+# The point is not that these steps run the suite -- it is that nothing decides whether they run.
+# The README claimed "0 errors, 0 warnings" while eleven warnings sat in the tree, for minutes. The
+# fix for that class of failure is not more care; it is a gate that does not depend on anybody having
+# a good day. Versions are pinned to the ones the project is developed against, so a green run here
+# means the same thing it means locally.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          set -e
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL -o /tmp/luau.zip https://github.com/luau-lang/luau/releases/latest/download/luau-ubuntu.zip
+          curl -sSL -o /tmp/selene.zip https://github.com/Kampfkarren/selene/releases/download/0.32.0/selene-0.32.0-linux.zip
+          curl -sSL -o /tmp/stylua.zip https://github.com/JohnnyMorganz/StyLua/releases/download/v2.5.2/stylua-linux-x86_64.zip
+          unzip -o -q /tmp/luau.zip -d "$HOME/.local/bin"
+          unzip -o -q /tmp/selene.zip -d "$HOME/.local/bin"
+          unzip -o -q /tmp/stylua.zip -d "$HOME/.local/bin"
+          chmod +x "$HOME/.local/bin/luau" "$HOME/.local/bin/selene" "$HOME/.local/bin/stylua"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Tests
+        run: luau tests/run.luau
+
+      - name: Lint
+        run: selene src/ tests/
+
+      - name: Format
+        run: stylua --check src/ tests/
