@@ -28,6 +28,15 @@ local ClientState = {}
 ]]
 ClientState.latest = nil
 ClientState.previous = nil
+
+--[[
+	A counter, and it is here rather than in a print for a plain reason: **the client's Output is not
+	readable from outside this session**, so a `warn` inside the handler is a message nobody can see.
+	An attribute or a field in a module the client can require is observable from a probe, which is the
+	difference between "the handler ran and died" and "the handler never ran" -- two failures that look
+	identical from the outside and need different fixes.
+]]
+ClientState.received = 0
 ClientState.changed = nil -- a BindableEvent, created by the client script, for whatever draws this
 
 function ClientState.set(state)

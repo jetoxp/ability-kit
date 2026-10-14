@@ -50,6 +50,7 @@ local stateRemote = netFolder:WaitForChild(Net.STATE)
 	because the alternative is a client that has stopped listening and does not say so.
 ]]
 stateRemote.OnClientEvent:Connect(function(state)
+	ClientState.received += 1
 	local ok, err = pcall(function()
 		ClientState.set(state)
 	end)
