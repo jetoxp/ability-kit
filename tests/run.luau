@@ -27,6 +27,7 @@ cargar("ResourceManager", "./ResourceManagerSpec")
 cargar("EffectSystem", "./EffectSystemSpec")
 cargar("Net", "./NetSpec")
 cargar("TargetResolver", "./TargetResolverSpec")
+cargar("HudPresenter", "./HudPresenterSpec")
 
 local bien = 0
 for _, ok in ipairs(todas) do
