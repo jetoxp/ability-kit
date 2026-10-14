@@ -107,6 +107,12 @@ end)
 
 T("slots are drawn in order, and a hole in the loadout does not shift them", function()
 	-- The loadout is a sparse array. Walking it with `#` would draw the wrong slots, or none.
+	--
+	-- This is the SECOND time this kit has paid for the same rule, and the cousin is worth naming:
+	-- phase 5 printed `#Catalog` over a dictionary (0, on a table that was full), and the presenter
+	-- walked `#latest.equipped` over an array with holes. **`#` is not a length — it is the last
+	-- frontier of a contiguous sequence, and on any table with a gap it lies.** Six phases apart,
+	-- same cause, same shape of surprise.
 	local d = HudPresenter.draw(nil, snap({ equipped = { [3] = "HEAL" } }), 0, 0.1, CATALOG)
 	assert(#d.slots == 1, "one slot, got " .. #d.slots)
 	assert(d.slots[1].slot == 3, "and it is slot 3")
