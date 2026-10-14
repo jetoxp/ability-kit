@@ -150,7 +150,15 @@ only honest way to write the first as the second is to say so.
 - **A miss leaves the caster at full health**, which is the case that caught the self-damage above.
 - **An activation spends the cost at the activation**, not when the effect fires: a cast interrupted
   halfway has been paid for, and that is a decision, not an oversight.
-- **A second activation is refused by the cooldown without charging again.**
+- **A second activation is refused by the cooldown without charging again**, and **the refusal names
+  itself and its reason in the Output** — the one claim in this README that until now rested on the code
+  obviously printing it. One run, two slots, two different reasons, provoked through the same remote the
+  client's keybind fires:
+
+  ```
+  [ability-kit] Jetoxsaurio asked for slot 1 and was refused: alreadyCasting
+  [ability-kit] Jetoxsaurio asked for slot 3 and was refused: abilityOnCooldown
+  ```
 - **Death restores the pools and clears the cooldowns**, and drops the effects attached to the character
   that died.
 - **The HUD draws the four slots with their keybinds, and its numbers track the snapshot**: with the
