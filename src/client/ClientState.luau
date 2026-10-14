@@ -1,10 +1,15 @@
 --[[
 	ClientState.luau — the last snapshot the server sent, and nothing else.
 
-	It exists as a module rather than a variable inside the client script so that the UI of phase 7
-	can read it without being wired into the input handling. The client has no other state, and
-	deliberately no logic: it does not check a cooldown locally, does not know a cost, and cannot
-	decide that an ability is ready. It asks, and it waits.
+	It exists as a module rather than a variable inside the client script so that the HUD can read it
+	without being wired into the input handling. The client has no other state, and deliberately no
+	logic: it does not check a cooldown locally, does not know a cost, and cannot decide that an ability
+	is ready. It asks, and it waits.
+
+	It keeps TWO snapshots, not one, and the HUD is the reason. Interpolation happens between the
+	previous and the latest -- never against a clock -- so somebody has to hold the pair, and the
+	alternative (the presenter keeping history) would break the property that makes it testable. The
+	cost is one extra table reference.
 ]]
 
 local ClientState = {}
@@ -22,9 +27,11 @@ local ClientState = {}
 	state is a module that reports a state the server never sent.
 ]]
 ClientState.latest = nil
+ClientState.previous = nil
 ClientState.changed = nil -- a BindableEvent, created by the client script, for whatever draws this
 
 function ClientState.set(state)
+	ClientState.previous = ClientState.latest
 	ClientState.latest = state
 	if ClientState.changed ~= nil then
 		ClientState.changed:Fire(state)
