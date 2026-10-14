@@ -51,6 +51,11 @@ local stateRemote = netFolder:WaitForChild(Net.STATE)
 ]]
 stateRemote.OnClientEvent:Connect(function(state)
 	ClientState.received += 1
+	-- An ATTRIBUTE on the player, and it is not belt-and-braces: `received` is a field in a module,
+	-- and when a module field says 0 while a connection from outside the same remote receives twenty
+	-- snapshots, the first question is whether the writer and the reader are looking at the same
+	-- module instance. An attribute is instance state, so it answers that question by construction.
+	player:SetAttribute("abilityKitSnapshots", ClientState.received)
 	local ok, err = pcall(function()
 		ClientState.set(state)
 	end)
