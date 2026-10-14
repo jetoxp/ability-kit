@@ -120,9 +120,32 @@ presenter is pure:
 2. **An observed run**, because a presenter with a suite proves the numbers and not the screen: the
    cooldown sweep visibly moving, the cast bar filling during a 0.4s cast, the mana bar dropping on an
    activation and refilling after a death, and the keybind labels matching the slots that fire.
-3. **The one comparison that matters**: what the HUD shows against what the server's snapshot says, at
-   the same moment. A HUD that is pretty and wrong is the same failure this project keeps finding, one
-   layer out.
+3. **The one comparison that matters**: what the HUD shows against what the server's snapshot says. A
+   HUD that is pretty and wrong is the same failure this project keeps finding, one layer out.
+
+**The harness for that third one, written before the run, because it is the criterion with a difficulty
+the other two do not have.** The snapshot changes ten times a second, so "at the same moment" is not
+something a person can eyeball — it has to be constructed. The procedure, in a live playtest:
+
+```lua
+-- in the same frame, from the same table:
+1. read ClientState.latest.cooldowns[slot]      -- what the server last said
+2. read the fraction the HUD is drawing for that slot, from the description the presenter produced
+   for that same snapshot
+3. compare, against a tolerance with a DIRECTION
+```
+
+**The tolerance is directional, and that is what makes the comparison checkable rather than a
+judgement call.** By D2 the HUD interpolates between the last two snapshots and can therefore be at
+most one interval *behind* the server's newest number — and never ahead of it. So:
+
+- HUD **more** cooldown left than the snapshot says -> **a bug**. The presenter is inventing time.
+- HUD **less** cooldown left than the snapshot says -> **legitimate interpolation**, bounded by one
+  interval (100 ms).
+- HUD **equal** -> the interval had elapsed and the drawn value is the server's own.
+
+Without that asymmetry the criterion is a sentence; with it, it is a check that fails on the right
+side. The same table applies to the mana bar: equal or behind, never ahead.
 
 ## Out of scope, declared
 
